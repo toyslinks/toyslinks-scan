@@ -97,6 +97,24 @@
   @keyframes flash { 0% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
   .busy::before { content: ''; display: inline-block; width: 12px; height: 12px; margin-right: 6px; border: 2px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .msBox { display: flex; gap: 10px; align-items: center; margin: 0 0 8px; padding: 8px; border: 1px dashed var(--line); border-radius: 8px; }
+  .msBox img { width: 64px; height: 64px; object-fit: contain; background: #fff; border-radius: 6px; flex: none; }
+  .shStock .lbl .busy { font-size: 11px; }
+  .pslots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px; }
+  .pthumb { position: relative; padding: 0; aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--panel); display: flex; align-items: center; justify-content: center; }
+  .pthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .pthumb .pempty { font-size: 11px; color: var(--muted); }
+  .pthumb .plabel { position: absolute; left: 0; right: 0; bottom: 0; font-size: 11px; background: rgba(0,0,0,.55); color: #fff; text-align: center; padding: 1px 0; }
+  .pthumb.on { border: 2px solid var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .stkRow { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .ckBig { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 12px; border: 2px solid var(--line); background: var(--bg); color: var(--fg); font-weight: 600; font-size: 15px; min-height: 52px; }
+  .ckBig .ckBox { width: 26px; height: 26px; border-radius: 6px; border: 2px solid var(--muted); display: inline-flex; align-items: center; justify-content: center; font-size: 18px; line-height: 1; }
+  .ckBig .ckTx { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+  .ckBig .ckTx small { font-size: 11px; font-weight: 400; color: var(--muted); }
+  .ckBig.on { border-color: var(--ok); }
+  .ckBig.on .ckBox { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .ckDone { color: var(--ok); font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+  .go2.wide { width: 100%; flex: none; margin-top: 6px; }
 </style>
 <script>
 (function () { var t = null; try { t = localStorage.getItem('scanTheme'); } catch (e) {}
@@ -492,6 +510,99 @@ function blurResize(m, S, w, h) {
   }
   return o;
 }
+// sw×sh → w×h（なめらかに広げる）
+function blurResize2(m, sw, sh, w, h) {
+  var o = new Float32Array(w * h);
+  for (var y = 0; y < h; y++) {
+    var fy = Math.min(sh - 1, Math.max(0, (y + 0.5) * sh / h - 0.5)), y0 = Math.floor(fy), y1 = Math.min(sh - 1, y0 + 1), ty = fy - y0;
+    for (var x = 0; x < w; x++) {
+      var fx = Math.min(sw - 1, Math.max(0, (x + 0.5) * sw / w - 0.5)), x0 = Math.floor(fx), x1 = Math.min(sw - 1, x0 + 1), tx = fx - x0;
+      o[y * w + x] = (m[y0 * sw + x0] * (1 - tx) + m[y0 * sw + x1] * tx) * (1 - ty) + (m[y1 * sw + x0] * (1 - tx) + m[y1 * sw + x1] * tx) * ty;
+    }
+  }
+  return o;
+}
+// ---------- 箱（パッケージ）ごと残す ----------
+// AI は箱に印刷されたキャラクターだけを「商品」と見ることがある。そこで：
+//  1. 写真のふちの色を「背景の色」として覚える
+//  2. AI が見つけた所から、つながっていて「背景の色ではない」所へ広げる（箱の残りの部分）
+//  3. 形がほぼ凸（箱など）なら、外側の線（凸包）でまるごと残す
+function blurHull(pts) {
+  pts.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+  var cross = function (o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); };
+  var lo = [], up = [], i;
+  for (i = 0; i < pts.length; i++) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], pts[i]) <= 0) lo.pop(); lo.push(pts[i]); }
+  for (i = pts.length - 1; i >= 0; i--) { while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], pts[i]) <= 0) up.pop(); up.push(pts[i]); }
+  up.pop(); lo.pop();
+  return lo.concat(up);
+}
+// wide：「広めに残す」…背景の色とみなす色を少なくし、AI の弱い所からも広げ、いつも外側の線で少し広めに残す
+function blurRegion(src, m, S, wide) {
+  var side = 192, sc = Math.min(1, side / Math.max(src.width, src.height));
+  var w = Math.max(24, Math.round(src.width * sc)), h = Math.max(24, Math.round(src.height * sc)), n = w * h, i, x, y;
+  var A = blurResize(m, S, w, h);
+  var c = blurCanvas(w, h), cx = c.getContext('2d'); cx.imageSmoothingQuality = 'high'; cx.drawImage(src, 0, 0, w, h);
+  var d = cx.getImageData(0, 0, w, h).data, bin = new Int16Array(n);
+  for (i = 0; i < n; i++) bin[i] = ((d[i * 4] >> 5) << 6) | ((d[i * 4 + 1] >> 5) << 3) | (d[i * 4 + 2] >> 5);
+  // 1. ふちの色（AI が商品と見た所は除く）
+  var hist = new Float32Array(512), bw = Math.max(2, Math.round(Math.min(w, h) * 0.04)), cnt = 0;
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) if (x < bw || y < bw || x >= w - bw || y >= h - bw) { i = y * w + x; if (A[i] < 0.5) { hist[bin[i]]++; cnt++; } }
+  if (cnt < 30) return null;
+  var sm = new Float32Array(512);
+  for (var b = 0; b < 512; b++) {
+    if (!hist[b]) continue;
+    var r0 = b >> 6, g0 = (b >> 3) & 7, b0 = b & 7;
+    for (var dr = -1; dr <= 1; dr++) for (var dg = -1; dg <= 1; dg++) for (var db = -1; db <= 1; db++) {
+      var rr = r0 + dr, gg = g0 + dg, bb = b0 + db;
+      if (rr < 0 || gg < 0 || bb < 0 || rr > 7 || gg > 7 || bb > 7) continue;
+      sm[(rr << 6) | (gg << 3) | bb] += hist[b] * (dr || dg || db ? 0.3 : 1);
+    }
+  }
+  var thr = cnt * (wide ? 0.02 : 0.004), bg = new Uint8Array(n);
+  for (i = 0; i < n; i++) bg[i] = sm[bin[i]] > thr ? 1 : 0;
+  // 2. AI が見つけた所から広げる
+  var R = new Uint8Array(n), st = [];
+  for (i = 0; i < n; i++) if (A[i] > (wide ? 0.3 : 0.6)) { R[i] = 1; st.push(i); }
+  var core = st.length;
+  if (!core) return null;
+  while (st.length) {
+    var p = st.pop(), px = p % w, py = (p / w) | 0;
+    for (var oy = -1; oy <= 1; oy++) for (var ox = -1; ox <= 1; ox++) {
+      var qx = px + ox, qy = py + oy;
+      if (qx < 0 || qy < 0 || qx >= w || qy >= h) continue;
+      var q = qy * w + qx;
+      if (!R[q] && (!bg[q] || A[q] > (wide ? 0.15 : 0.35))) { R[q] = 1; st.push(q); }
+    }
+  }
+  // 中の穴を埋める
+  var out0 = new Uint8Array(n);
+  for (i = 0; i < n; i++) { x = i % w; y = (i / w) | 0; if ((x === 0 || y === 0 || x === w - 1 || y === h - 1) && !R[i]) { out0[i] = 1; st.push(i); } }
+  while (st.length) {
+    p = st.pop(); px = p % w; py = (p / w) | 0;
+    [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (o) { var qx2 = px + o[0], qy2 = py + o[1]; if (qx2 < 0 || qy2 < 0 || qx2 >= w || qy2 >= h) return; var q2 = qy2 * w + qx2; if (!out0[q2] && !R[q2]) { out0[q2] = 1; st.push(q2); } });
+  }
+  var area = 0;
+  for (i = 0; i < n; i++) { if (!out0[i]) R[i] = 1; area += R[i]; }
+  if (area > n * (wide ? 0.97 : 0.9)) return null; // 背景の色をうまく覚えられなかった → AI のまま
+  // 3. 外側の線（凸包）
+  var pts = [];
+  for (i = 0; i < n; i++) if (R[i]) { x = i % w; y = (i / w) | 0; if (x === 0 || y === 0 || x === w - 1 || y === h - 1 || !R[i - 1] || !R[i + 1] || !R[i - w] || !R[i + w]) pts.push([x + 0.5, y + 0.5]); }
+  if (pts.length < 3) return null;
+  var hull = blurHull(pts), ha = 0;
+  for (i = 0; i < hull.length; i++) { var a1 = hull[i], a2 = hull[(i + 1) % hull.length]; ha += a1[0] * a2[1] - a2[0] * a1[1]; }
+  ha = Math.abs(ha) / 2;
+  var solid = ha ? area / ha : 0, out = new Float32Array(n), box = wide || solid > 0.72;
+  if (box) {
+    var pc = blurCanvas(w, h), px2 = pc.getContext('2d');
+    px2.fillStyle = '#fff'; px2.strokeStyle = '#fff'; px2.lineJoin = 'round'; px2.beginPath(); px2.moveTo(hull[0][0], hull[0][1]);
+    for (i = 1; i < hull.length; i++) px2.lineTo(hull[i][0], hull[i][1]);
+    px2.closePath(); px2.fill();
+    if (wide) { px2.lineWidth = Math.max(2, Math.round(Math.max(w, h) * 0.04)); px2.stroke(); }
+    var pd = px2.getImageData(0, 0, w, h).data;
+    for (i = 0; i < n; i++) out[i] = Math.max(R[i], pd[i * 4 + 3] / 255);
+  } else for (i = 0; i < n; i++) out[i] = R[i];
+  return { m: out, w: w, h: h, box: box, cover: area / n, grew: area / core, solid: solid };
+}
 // 平均（半径 r の四角）を積分画像で
 function blurBox(a, w, h, r) {
   var S = new Float64Array((w + 1) * (h + 1)), o = new Float32Array(w * h), x, y;
@@ -584,28 +695,36 @@ function blurEllipse(w, h) {
   return a;
 }
 function blurTimeout(p, ms, msg) { return Promise.race([p, new Promise(function (ok, ng) { setTimeout(function () { ng(new Error(msg)); }, ms); })]); }
-// 写真のファイル → {dataUrl（保存する写真）, mode: 'ai'|'simple'|'none', note, orig（ぼかしていない写真・AIが使えなかったときだけ）}
-function blurPhoto(file, max) {
-  var t0 = Date.now();
-  return blurFileToCanvas(file, max || 2000).then(function (src) {
+// 写真のファイル → {dataUrl（保存する写真）, mode: 'box'|'ai'|'simple'|'none', note, orig（ぼかしていない写真。「ぼかさずに保存する」用）}
+function blurPhoto(file, max, opt) {
+  var t0 = Date.now(), wide = !!(opt && opt.wide);
+  var same = BLUR.last && BLUR.last.file === file;
+  return (same ? Promise.resolve(BLUR.last.src) : blurFileToCanvas(file, max || 2000)).then(function (src) {
     var W = src.width, H = src.height, r = Math.min(1, 512 / Math.max(W, H)), w = Math.max(16, Math.round(W * r)), h = Math.max(16, Math.round(H * r));
     var jpeg = function (c) { return c.toDataURL('image/jpeg', 0.88); };
     var simple = function (why) {
       return { dataUrl: jpeg(blurCompose(src, blurEllipse(w, h), w, h)), mode: 'simple', note: why + '真ん中以外をぼかしました（商品を真ん中に大きく写すときれいになります）', orig: jpeg(src), ms: Date.now() - t0 };
     };
-    return blurTimeout(blurMask(src), 90000, 'AIの読み込みに時間がかかっています').then(function (m) {
+    var mk = same && BLUR.last.m ? Promise.resolve(BLUR.last.m) : blurTimeout(blurMask(src), 90000, 'AIの読み込みに時間がかかっています');
+    BLUR.last = { file: file, src: src, m: same ? BLUR.last.m : null };
+    return mk.then(function (m) {
+      BLUR.last.m = m;
       var cl = blurClean(m, BLUR.S);
       if (!cl || cl.cover < 0.02) return simple('AIで商品を見つけられなかったので、');
       if (cl.cover > 0.93) return { dataUrl: jpeg(src), mode: 'none', note: '商品が写真いっぱいに写っているので、ぼかしていません', orig: '', ms: Date.now() - t0 };
-      var p = blurResize(cl.m, BLUR.S, w, h);
+      var reg = null;
+      try { reg = blurRegion(src, cl.m, BLUR.S, wide); } catch (e) { reg = null; }
+      if (reg && reg.cover > 0.93) return { dataUrl: jpeg(src), mode: 'none', note: '商品が写真いっぱいに写っているので、ぼかしていません', orig: '', ms: Date.now() - t0 };
+      var p = reg ? blurResize2(reg.m, reg.w, reg.h, w, h) : blurResize(cl.m, BLUR.S, w, h);
       var q = blurGuided(blurGray(src, w, h), p, w, h, Math.max(2, Math.round(Math.max(w, h) / 80)), 1e-3);
       for (var i = 0; i < q.length; i++) { var a = Math.min(1, Math.max(0, (q[i] - 0.3) / 0.4)); q[i] = a * a * (3 - 2 * a); }
-      return { dataUrl: jpeg(blurCompose(src, q, w, h)), mode: 'ai', note: '', orig: '', cover: cl.cover, ms: Date.now() - t0 };
+      return { dataUrl: jpeg(blurCompose(src, q, w, h)), mode: reg && reg.box ? 'box' : 'ai', wide: wide, note: '', orig: jpeg(src), cover: reg ? reg.cover : cl.cover, region: reg ? { box: reg.box, grew: reg.grew, solid: reg.solid } : null, ms: Date.now() - t0 };
     }, function (e) { return simple('AIを使えなかったので（' + ((e && e.message) || 'エラー') + '）、'); });
   });
 }
 // ---------- 読み取った商品の画面（スマホの入荷スキャン・ダッシュボードで共通） ----------
-// 使う側で用意するもの：api(action, params) → Promise、esc()、toast()、SHEET_HOOKS = { shown(it), saved(r), closed(), beforePhoto(), staff(name) }
+// 使う側で用意するもの：api(action, params) → Promise、esc()、toast()、SHEET_HOOKS = { shown(it), saved(r), closed(), beforePhoto(), staff(name), localItem(jan) }
+// 読んだらすぐ：localItem（手元の在庫一覧）で先に出し、スプレッドシートの最新（メールの入荷など）はあとから入れ替える
 var ITEM = null, PHOTO = null, STAFF_MEM = '';
 var SHORT = { 'マイルストン': 'マイル', 'LEXACT': 'リザクト', 'カワダオンライン': 'カワダ', '松村商店': '松村' };
 var PLACE_LABEL = { 'その他': 'その他（ヤフオクに自動出品しない）', '芝公園': '芝公園', '佐川': '佐川（倉庫）' };
@@ -635,7 +754,17 @@ function qtyBox(cls, v) { return '<span class="qty"><button type="button" data-s
 function openSheet(html) {
   document.getElementById('sheetBody').innerHTML = html;
   document.getElementById('sheetBg').hidden = false;
+  wirePhotoInputs();
 }
+// 写真の選択：カメラのアプリから戻る前に画面が新しくなっても（最新に入れ替えたときなど）写真をなくさないよう、
+// 入力欄そのものに直接つなぐ（画面から外れた欄でも届く）
+function onPhotoInput(ev) {
+  var inp = ev.target, f = inp.files && inp.files[0];
+  inp.value = '';
+  if (!f || !ITEM) return;
+  runBlur(f, null);
+}
+function wirePhotoInputs() { document.querySelectorAll('#sheetBody input.pp').forEach(function (i) { i.onchange = onPhotoInput; }); }
 // 名前（だれが撮った・数えたか）
 var ASK_THEN = null;
 function askStaff(then) {
@@ -650,28 +779,63 @@ function openItem(it) {
   showItem();
 }
 function newItemForm(it, open) {
+  var ms = it.ms || null;
   return '<div class="shSec newItem"' + (open ? '' : ' hidden') + '><div class="shT">在庫リストに登録</div>' +
-    '<label class="fl">商品名<input class="niName" value="' + esc(it.name || '') + '" placeholder="箱に書いてある商品名"></label>' +
+    (ms ? '<div class="msBox">' + (ms.image ? '<img src="' + esc(ms.image) + '" alt="" loading="lazy">' : '') + '<div class="hint" style="margin:0">マイルストンの商品情報から入れました。違っていたら直してください<br>' +
+      '<a href="' + esc(ms.url) + '" target="_blank" rel="noopener">マイルストンで見る</a>' + (ms.price ? '・上代 ' + Number(ms.price).toLocaleString() + '円' : '') + (ms.carton ? '・カートン ' + esc(ms.carton) + '個' : '') + '</div></div>' : '') +
+    '<label class="fl">商品名<input class="niName" value="' + esc(it.name || (ms && ms.name) || '') + '" placeholder="箱に書いてある商品名"></label>' +
     '<label class="fl">場所<select class="niPlace">' + placeOptions(it, 'その他') + '</select></label>' +
     '<label class="fl">棚番（置いた場所）<input class="niShelf" placeholder="例 A-3"></label>' +
     '<div class="fl">個数' + qtyBox('niQty', 1) + '</div>' +
-    '<label class="fl">メーカー名（分かれば）<input class="niMaker"></label>' +
+    '<label class="fl">メーカー名（分かれば）<input class="niMaker" value="' + esc((ms && ms.maker) || '') + '"></label>' +
     '<button type="button" class="go wide" data-new="1">登録する</button>' +
     '<div class="hint" style="margin:6px 0 0">在庫リスト TOYSLINKS の選んだタブ（その他＝「その他在庫」）のいちばん下に1行足します。登録したら続けて写真を撮れます</div></div>';
+}
+// 商品写真の4枚（表・裏・側面1・側面2）
+var PSLOTS = ['表', '裏', '側面1', '側面2'];
+function photoAt(it, k) {
+  var p = (it.photos || [])[k - 1];
+  if (p && (p.url || p.local)) return p;
+  return k === 1 && it.photo && it.photo.url ? it.photo : null;
+}
+function photoSlotsHtml(it) {
+  var cur = it._pslot || 1;
+  return PSLOTS.map(function (lb, i) {
+    var k = i + 1, p = photoAt(it, k);
+    var src = p ? (p.local || driveThumb(p.url, 160)) : '';
+    return '<button type="button" class="pthumb' + (cur === k ? ' on' : '') + '" data-pslot="' + k + '" title="' + esc(lb + (p && p.at ? ' 撮影 ' + p.at + (p.by ? '・' + p.by : '') : '')) + '">' +
+      (src ? '<img src="' + esc(src) + '" alt="" loading="lazy">' : '<span class="pempty">まだ</span>') + '<span class="plabel">' + lb + '</span></button>';
+  }).join('');
+}
+function photoBtnText(it) {
+  var k = it._pslot || 1;
+  return (photoAt(it, k) ? '撮り直す' : '写真を撮る') + '（' + k + '枚目・' + PSLOTS[k - 1] + '）';
+}
+function renderPhotoSlots() {
+  var it = ITEM; if (!it) return;
+  var box = document.querySelector('#sheetBody .pslots'); if (box) box.innerHTML = photoSlotsHtml(it);
+  var b = document.getElementById('photoBtnMain'); if (b && b.firstChild) b.firstChild.nodeValue = photoBtnText(it);
 }
 function showItem() {
   var it = ITEM, r = it.row, h = '';
   h += '<div class="shHead"><div><div class="shName">' + esc(it.name || '（商品名が見つかりません）') + '</div><div class="jan">JAN ' + esc(it.jan) +
     (it.tabs && it.tabs.length ? '・在庫リスト：' + it.tabs.map(function (t) { return esc(PLACE_TAB[t] || t); }).join('・') : '') + (it.shelf ? '・棚番 ' + esc(it.shelf) : '') + '</div></div>' +
     '<button type="button" class="shX" data-close="1" aria-label="閉じる">×</button></div>';
-  if (!it.registered && !r) {
+  if (it.searching) { // 手元の一覧に無い商品：スプレッドシートで探している間
+    h += '<div class="shStock"><div class="hint busy" style="margin:0">スプレッドシートで探しています…</div></div><button type="button" class="nextScan sub" data-close="1">やめて次を読む</button>';
+    openSheet(h); return;
+  }
+  if (!it.registered && !r && !it.loading) {
     h += '<div class="shStock warnBox"><b>見つからない商品です</b><div class="hint" style="margin:2px 0 0">在庫リストにも入荷記録にもありません。この場で登録できます。</div></div>' + newItemForm(it, true);
     h += '<button type="button" class="nextScan sub" data-close="1">登録しないで次を読む</button>';
     openSheet(h); if (SHEET_HOOKS.shown) SHEET_HOOKS.shown(it); return;
   }
-  h += '<div class="shStock"><div class="lbl">いまの在庫（帳簿）</div><div class="num">' + (r ? r.left : 0) + '<small>個</small></div>' +
+  var c0 = r && r.count ? r.count : null;
+  h += '<div class="shStock"><div class="stkRow"><div><div class="lbl">いまの在庫（帳簿）' + (it.loading ? '<span class="busy" style="margin-left:8px">最新を確認中</span>' : '') + '</div><div class="num">' + (r ? r.left : 0) + '<small>個</small></div></div>' +
+    '<button type="button" class="ckBig' + (c0 ? ' on' : '') + '" data-cnt="1" title="押すと、下の実数（ふつうは帳簿の数）で棚卸し済みにします"><span class="ckBox">' + (c0 ? '✓' : '') + '</span><span class="ckTx">棚卸し' + (c0 ? '済み<small>' + esc(String(c0.at).slice(5)) + '</small>' : '') + '</span></button></div>' +
     (r ? '<div>' + supChips(r.sup, r.base, r.applied) + (r.shipped ? '<span class="sup">Amazon出荷 −' + r.shipped + '</span>' : '') + '</div>' : '') + '</div>';
-  if (!it.registered) h += '<div class="shSec"><div class="addRow"><span class="hint" style="flex:1 1 60%;margin:0">在庫リスト TOYSLINKS にまだ無い商品です' + (it.sync && r && r.left > 0 ? '（届いた分は次の集計で「その他在庫」に自動で入ります）' : '') + '</span><button type="button" class="go2" data-newopen="1">在庫リストに登録</button></div></div>' + newItemForm(it, false);
+  if (it.loading) h += '<div class="shSec"><div class="hint busy" style="margin:0">メールで出荷済みの入荷などを確認しています…</div></div>';
+  else if (!it.registered) h += '<div class="shSec"><div class="addRow"><span class="hint" style="flex:1 1 60%;margin:0">在庫リスト TOYSLINKS にまだ無い商品です' + (it.sync && r && r.left > 0 ? '（届いた分は次の集計で「その他在庫」に自動で入ります）' : '') + '</span><button type="button" class="go2" data-newopen="1">在庫リストに登録</button></div></div>' + newItemForm(it, false);
   if (it.pending && it.pending.length) {
     h += '<div class="shSec"><div class="shT">メールで出荷済み・届いたら押す</div>' + it.pending.map(function (p) {
       return '<div class="pend" data-row="' + p.row + '"><span>' + esc(SHORT[p.supplier] || p.supplier) + ' ' + esc(String(p.day).slice(5)) + ' 出荷 <b>' + p.qty + '個</b></span>' +
@@ -684,21 +848,54 @@ function showItem() {
     '<div class="hint" style="margin:4px 0 0">マイルストン・LEXACTはメールから自動で数えるので、上に出ていないときだけ使ってください</div></div>';
   var c = r && r.count ? r.count : null;
   var place = (c && c.place) || (it.tabs && it.tabs[0]) || 'その他';
-  h += '<div class="shSec"><div class="shT">棚卸し（数えた実数・置いた場所）</div>' +
+  h += '<div class="shSec"><div class="shT">棚卸し（実数・置いた場所）</div>' +
+    (c ? '<div class="ckDone">✓ 棚卸し済み ' + esc(c.at) + (c.memo ? '・' + esc(c.memo) : '') + '<div class="hint" style="margin:0">実数 ' + c.count + '（帳簿 ' + c.book + (c.count !== c.book ? '・差 ' + (c.count > c.book ? '+' : '') + (c.count - c.book) : '') + '）' + (c.place ? '・' + esc(c.place) : '') + (c.shelf ? '・棚番 ' + esc(c.shelf) : '') + '</div></div>' : '') +
     '<div class="addRow"><select class="cp" aria-label="場所">' + placeOptions(it, place) + '</select><input class="cs" placeholder="棚番（例 A-3）" value="' + esc(it.shelf || '') + '" aria-label="棚番"></div>' +
-    '<div class="addRow">' + qtyBox('cq', c ? c.count : (r ? Math.max(r.left, 0) : 0)) + '<button type="button" class="go2" data-cnt="1">実数を記録</button></div>' +
-    (c ? '<div class="hint" style="margin:4px 0 0">前回 ' + esc(c.at) + '：実数 ' + c.count + '（帳簿 ' + c.book + '）' + (c.memo ? '・' + esc(c.memo) : '') + (c.place ? '・' + esc(c.place) : '') + (c.shelf ? '・棚番 ' + esc(c.shelf) : '') + '</div>' : '') + '</div>';
-  var ph = it.photo;
-  h += '<div class="shSec" id="photoSec"><div class="shT">商品写真</div>' +
-    (ph && ph.url ? '<div class="photoNow"><a href="' + esc(ph.url) + '" target="_blank" rel="noopener"><img src="' + esc(driveThumb(ph.url, 240)) + '" alt="" loading="lazy"></a><div class="hint" style="margin:0">いまの写真' + (ph.at ? '<br>撮影 ' + esc(ph.at) : '') + (ph.by ? '・' + esc(ph.by) : '') + '</div></div>' : '') +
-    '<div class="addRow"><label class="go photoBtn">' + (ph && ph.url ? '写真を撮り直す' : '写真を撮る') + '（カメラ）<input type="file" accept="image/*" capture="environment" class="pp" hidden></label></div>' +
-    '<div class="hint" style="margin:4px 0 0">背景はAIで自動でぼかします（初回だけAIの読み込みに少しかかります）。ドライブの「在庫リストTOYSLINKS」→ 撮影日のフォルダに「' + esc((it.name || '商品') + ' ' + it.jan) + '.jpg」で保存し、在庫リスト TOYSLINKS の商品画像（A列）・撮影日・撮影者を書き換えます</div><div class="photoOut"></div></div>';
+    '<div class="addRow"><span class="hint" style="margin:0">実数</span>' + qtyBox('cq', r ? Math.max(r.left, 0) : 0) + '<button type="button" class="go2" data-cnt="1">' + (c ? 'もう一度 棚卸し済みにする' : 'この数で棚卸し済みにする') + '</button></div>' +
+    '<div class="hint" style="margin:4px 0 0">数が帳簿と同じなら、上の「棚卸し」を押すだけでOK。違うときは実数を直してから押してください</div></div>';
+  h += '<div class="shSec" id="photoSec"><div class="shT">商品写真（4枚まで：表・裏・側面1・側面2）</div><div class="pslots">' + photoSlotsHtml(it) + '</div>' +
+    '<div class="addRow"><label class="go photoBtn" id="photoBtnMain">' + photoBtnText(it) + '<input type="file" accept="image/*" capture="environment" class="pp" hidden></label></div>' +
+    '<div class="hint" style="margin:4px 0 0">撮るたびに 表→裏→側面1→側面2 の順に進みます（枠を押すと、その写真を撮り直せます）。背景はAIで自動でぼかします（初回だけ読み込みに少しかかります）。ドライブの「在庫リストTOYSLINKS」→ 撮影日のフォルダに「' + esc((it.name || '商品') + ' ' + it.jan) + '.jpg」（裏・側面は「_裏」などを付けて）保存し、在庫リスト TOYSLINKS の 商品画像（A列＝表）・画像2〜画像4（裏・側面）・撮影日・撮影者を書き換えます</div><div class="photoOut"></div></div>';
   if (it.received && it.received.length) h += '<div class="shSec"><div class="shT">最近の入荷</div>' + it.received.slice().reverse().map(function (x) { return '<div class="hint" style="margin:0">' + esc(x.day) + ' ' + esc(x.supplier) + ' ' + x.got + '個' + (x.got !== x.qty ? '（出荷 ' + x.qty + '）' : '') + (x.at ? '・検品 ' + esc(x.at) : '') + (x.by ? ' ' + esc(x.by) : '') + '</div>'; }).join('') + '</div>';
   h += '<button type="button" class="nextScan" data-close="1">次の商品を読む</button>';
   openSheet(h);
   if (SHEET_HOOKS.shown) SHEET_HOOKS.shown(it);
 }
+// JAN を読んだ → 手元の一覧があればすぐ出す → スプレッドシートの最新で入れ替える
+var LOOKUP_SEQ = 0;
+function lookupAndOpen(code) {
+  var seq = ++LOOKUP_SEQ;
+  var loc = SHEET_HOOKS.localItem ? SHEET_HOOKS.localItem(code) : null;
+  if (loc) { loc.loading = true; openItem(loc); }
+  else { ITEM = { jan: code, name: 'JAN ' + code, searching: true }; PHOTO = null; showItem(); }
+  return api('scanLookup', { jan: code }).then(function (it) {
+    if (seq !== LOOKUP_SEQ) return it; // 閉じた・次の商品を読んだ
+    if (ASK_THEN) { ITEM = it; return it; } // 名前を聞いている間：名前を入れたら最新を出す
+    if (ITEM && !ITEM.searching && ITEM.jan === it.jan && !document.getElementById('sheetBg').hidden && document.querySelector('#sheetBody .shStock')) refreshItem(it);
+    else openItem(it);
+    return it;
+  }, function (e) {
+    if (seq === LOOKUP_SEQ && ITEM && ITEM.searching) closeItem();
+    if (seq === LOOKUP_SEQ && ITEM && ITEM.loading) { ITEM.loading = false; refreshItem(ITEM); }
+    throw e;
+  });
+}
+// 表示中の商品を最新に入れ替える（入れかけた数・棚番・撮った写真はそのまま）
+function refreshItem(full) {
+  var body = document.getElementById('sheetBody'), keep = {};
+  body.querySelectorAll('input[data-touched], select[data-touched]').forEach(function (e) { keep[e.className] = e.value; });
+  var po = body.querySelector('.photoOut'), photoHtml = po ? po.innerHTML : '';
+  var nf = body.querySelector('.newItem'), newOpen = nf && !nf.hidden;
+  var top = body.scrollTop, photo = PHOTO, pslot = ITEM && ITEM._pslot;
+  if (pslot) full._pslot = pslot;
+  ITEM = full; showItem(); PHOTO = photo;
+  Object.keys(keep).forEach(function (c) { var e = body.querySelector('.' + c.split(' ')[0]); if (e) { e.value = keep[c]; e.dataset.touched = '1'; } });
+  var po2 = body.querySelector('.photoOut'); if (po2 && photoHtml) { po2.innerHTML = photoHtml; wirePhotoInputs(); }
+  if (newOpen) { var nf2 = body.querySelector('.newItem'); if (nf2) { nf2.hidden = false; var op = body.querySelector('[data-newopen]'); if (op) op.closest('.shSec').hidden = true; } }
+  body.scrollTop = top;
+}
 function closeItem() {
+  LOOKUP_SEQ++;
   var it = ITEM;
   document.getElementById('sheetBg').hidden = true; ITEM = null; PHOTO = null; ASK_THEN = null;
   if (SHEET_HOOKS.closed) SHEET_HOOKS.closed(it);
@@ -710,8 +907,8 @@ function afterSave(r, msg) {
   toast(msg + syncText(r) + (r.note ? '（' + r.note + '）' : ''), !!r.note);
 }
 function photoDoneHtml(r, dataUrl) {
-  return '<div class="photoDone"><img src="' + dataUrl + '" alt=""><div>保存しました：<a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.fileName) + '</a><div class="hint" style="margin:0">' + esc(r.folder) +
-    (r.rows ? '・在庫リストの商品画像を ' + r.rows + ' 行置き換え' : '') + (r.by ? '・撮影 ' + esc(r.by) : '') + '</div>' + (r.note ? '<div class="hint" style="margin:0;color:var(--warn)">' + esc(r.note) + '</div>' : '') + '</div></div>';
+  return '<div class="photoDone"><img src="' + dataUrl + '" alt=""><div>' + esc(r.label || '') + 'を保存しました：<a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.fileName) + '</a><div class="hint" style="margin:0">' + esc(r.folder) +
+    (r.rows ? '・在庫リストの' + esc(r.col || '商品画像') + 'を ' + r.rows + ' 行置き換え' : '') + (r.by ? '・撮影 ' + esc(r.by) : '') + '</div>' + (r.note ? '<div class="hint" style="margin:0;color:var(--warn)">' + esc(r.note) + '</div>' : '') + '</div></div>';
 }
 function savePhoto(btn, dataUrl, mode) {
   var it = ITEM, out = document.querySelector('#sheetBody .photoOut');
@@ -719,13 +916,23 @@ function savePhoto(btn, dataUrl, mode) {
   btn.disabled = true;
   out.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
   var st = document.createElement('div'); st.className = 'hint'; st.textContent = 'アップロードしています…'; out.appendChild(st);
-  api('scanPhoto', { jan: it.jan, name: it.name || '', data: dataUrl, mime: 'image/jpeg', by: staffName(), blur: mode === 'ai' ? 'AI' : mode === 'simple' ? '簡易（真ん中）' : 'なし' }).then(function (r) {
+  var slot = it._pslot || 1;
+  api('scanPhoto', { jan: it.jan, name: it.name || '', data: dataUrl, mime: 'image/jpeg', by: staffName(), blur: mode === 'ai' ? 'AI' : mode === 'simple' ? '簡易（真ん中）' : mode === 'box' ? 'AI（箱）' : 'なし', slot: slot }).then(function (r) {
     r.jan = r.jan || it.jan;
+    out = photoOut() || out;
     out.innerHTML = photoDoneHtml(r, dataUrl);
-    if (ITEM && ITEM.jan === it.jan) ITEM.photo = { url: r.url, at: r.at, by: r.by };
+    if (ITEM && ITEM.jan === it.jan) {
+      var ps = ITEM.photos = (ITEM.photos || []).slice();
+      ps[slot - 1] = { k: slot, label: PSLOTS[slot - 1], url: r.url, at: r.at, by: r.by, local: dataUrl };
+      if (slot === 1) ITEM.photo = { url: r.url, at: r.at, by: r.by };
+      if (slot < 4) ITEM._pslot = slot + 1; // 次は 裏 → 側面1 → 側面2
+      renderPhotoSlots();
+      var pb = document.getElementById('photoBtnMain'); if (pb && slot < 4) pb.classList.add('flash');
+    }
     if (SHEET_HOOKS.saved) SHEET_HOOKS.saved(r);
     toast('写真を保存しました');
   }, function (e) {
+    out = photoOut() || out;
     st.remove(); out.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
     var m = document.createElement('div'); m.className = 'saveMsg'; m.textContent = e.message; out.appendChild(m);
   });
@@ -745,7 +952,9 @@ function initSheet() {
     var t = ev.target;
     if (t === bg || t.closest('[data-close]')) { closeItem(); return; }
     var stp = t.closest('[data-step]');
-    if (stp) { var inp = stp.parentNode.querySelector('input'); inp.value = Math.max(0, (parseInt(inp.value, 10) || 0) + Number(stp.dataset.step)); return; }
+    if (stp) { var inp = stp.parentNode.querySelector('input'); inp.value = Math.max(0, (parseInt(inp.value, 10) || 0) + Number(stp.dataset.step)); inp.dataset.touched = '1'; return; }
+    var ps = t.closest('[data-pslot]');
+    if (ps && ITEM) { ITEM._pslot = Number(ps.dataset.pslot); renderPhotoSlots(); return; }
     if (t.closest('.photoBtn')) { if (SHEET_HOOKS.beforePhoto) SHEET_HOOKS.beforePhoto(); blurLoad().catch(function () {}); return; } // カメラを空ける・AIを先に読み始める
     var it = ITEM; if (!it) return;
     var fail = function (b) { return function (e) { b.disabled = false; toast(e.message, true); }; };
@@ -755,7 +964,7 @@ function initSheet() {
       var sec = t.closest('.newItem'), g = function (c) { return sec.querySelector(c).value; };
       if (!g('.niName').trim()) { toast('商品名を入れてください', true); sec.querySelector('.niName').focus(); return; }
       t.disabled = true;
-      api('scanNew', { jan: it.jan, name: g('.niName'), place: g('.niPlace'), shelf: g('.niShelf'), qty: g('.niQty'), maker: g('.niMaker'), by: by }).then(function (r) {
+      api('scanNew', { jan: it.jan, name: g('.niName'), place: g('.niPlace'), shelf: g('.niShelf'), qty: g('.niQty'), maker: g('.niMaker'), by: by, price: it.ms ? it.ms.price : '', carton: it.ms ? it.ms.carton : '' }).then(function (r) {
         afterSave(r, '在庫リストの「' + r.tab + '」に登録しました');
         var ps = document.getElementById('photoSec'); if (ps) { ps.classList.add('flash'); ps.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
       }, fail(t));
@@ -768,7 +977,7 @@ function initSheet() {
       var ar = t.closest('.addRow'); t.disabled = true;
       api('scanAdd', { supplier: ar.querySelector('.ns').value, jan: it.jan, qty: ar.querySelector('.nq').value, name: it.name || '', by: by }).then(function (r) { afterSave(r, '入荷を登録しました'); }, fail(t));
     } else if (t.closest('[data-cnt]')) {
-      var cs = t.closest('.shSec'); t.disabled = true;
+      var cs = document.querySelector('#sheetBody .cq').closest('.shSec'); t.disabled = true;
       api('scanCount', { jan: it.jan, count: cs.querySelector('.cq').value, place: cs.querySelector('.cp').value, shelf: cs.querySelector('.cs').value, by: by }).then(function (r) {
         var d = r.count.count - r.count.book;
         if (SHEET_HOOKS.saved) SHEET_HOOKS.saved(r);
@@ -779,27 +988,39 @@ function initSheet() {
       if (PHOTO) savePhoto(t, PHOTO.dataUrl, PHOTO.mode);
     } else if (t.closest('[data-psaveorig]')) {
       if (PHOTO && PHOTO.orig) savePhoto(t, PHOTO.orig, 'none');
+    } else if (t.closest('[data-pwide]')) {
+      if (PHOTO && PHOTO.file) runBlur(PHOTO.file, { wide: !PHOTO.wide });
     }
   });
+  bg.addEventListener('input', function (ev) { if (ev.target.matches && ev.target.matches('input, select')) ev.target.dataset.touched = '1'; });
   bg.addEventListener('change', function (ev) {
-    var inp = ev.target; if (!inp.classList || !inp.classList.contains('pp')) return;
-    var f = inp.files && inp.files[0]; inp.value = ''; var it = ITEM;
-    if (!f || !it) return;
-    var out = document.querySelector('#sheetBody .photoOut');
+    if (ev.target.matches && ev.target.matches('select')) ev.target.dataset.touched = '1';
+  });
+}
+// 写真 → 背景をぼかして確認の表示（opt.wide：広めに残す）
+// 表示を入れ替えた（最新に更新した）あとでも書けるように、毎回いまの欄を探す
+function photoOut() { return document.querySelector('#sheetBody .photoOut'); }
+function runBlur(f, opt) {
+    var it = ITEM, out = photoOut();
+    if (!it || !out) return;
     out.innerHTML = '<div class="hint busy">背景をぼかしています…' + (BLUR.sess ? '' : '（初回はAIの読み込みに少しかかります）') + '</div>';
     PHOTO = null;
     setTimeout(function () { // 表示を出してから重い処理
-      blurPhoto(f, 2000).then(function (res) {
-        if (ITEM !== it) return;
+      blurPhoto(f, 2000, opt).then(function (res) {
+        res.file = f;
+        if (!ITEM || ITEM.jan !== it.jan) return;
+        out = photoOut(); if (!out) return;
         PHOTO = res;
-        var label = res.mode === 'ai' ? '商品以外をぼかしました' : res.note;
-        out.innerHTML = '<div class="photoPrev"><img src="' + res.dataUrl + '" alt="ぼかした写真"><div class="hint' + (res.mode === 'ai' ? '' : ' warnTxt') + '">' + esc(label) + '</div>' +
+        var good = res.mode === 'ai' || res.mode === 'box';
+        var label = res.mode === 'box' ? '箱ごと残して、まわりをぼかしました' : res.mode === 'ai' ? '商品以外をぼかしました' : res.note;
+        out.innerHTML = '<div class="photoPrev"><img src="' + res.dataUrl + '" alt="ぼかした写真"><div class="hint' + (good ? '' : ' warnTxt') + '">' + esc(label) + (good ? '（商品が欠けていたら「ぼかさずに保存する」か撮り直し）' : '') + '</div>' +
           '<div class="addRow"><button type="button" class="go" data-psave="1">この写真で保存</button><label class="go2 photoBtn">撮り直す<input type="file" accept="image/*" capture="environment" class="pp" hidden></label></div>' +
+          (good ? '<button type="button" class="go2 wide" data-pwide="1">' + (res.wide ? 'せまく戻す（商品の形に合わせる）' : '商品が欠けている → 広めに残す（箱ごと）') + '</button>' : '') +
           (res.orig ? '<button type="button" class="linkBtn" data-psaveorig="1">ぼかさずに保存する</button>' : '') + '</div>';
+        wirePhotoInputs();
         var pv = out.querySelector('.photoPrev'); if (pv) pv.scrollIntoView({ block: 'nearest' });
-      }).catch(function (e) { out.innerHTML = '<div class="saveMsg">' + esc(e.message) + '</div>'; });
+      }).catch(function (e) { out = photoOut(); if (out) out.innerHTML = '<div class="saveMsg">' + esc(e.message) + '</div>'; });
     }, 30);
-  });
 }
 // ---------- カメラ（その場で読み続ける） ----------
 // 端末の BarcodeDetector があればそれで、なければこのページの読み取りで（枠の中を横に読む）
@@ -874,9 +1095,42 @@ function found(code) {
   if (code && code === CAM.last && now - CAM.lastAt < 2500 && !document.getElementById('sheetBg').hidden) return;
   CAM.last = code; CAM.lastAt = now;
   if (!code) { setMsg('バーコードを読めませんでした。' + (SCAN_DIAG ? '（' + SCAN_DIAG + '）' : ''), true); return; }
-  setMsg('JAN ' + code + ' を探しています…');
-  api('scanLookup', { jan: code }).then(function (it) { setMsg(''); openItem(it); }, function (e) { setMsg(e.message, true); });
+  setMsg('');
+  lookupAndOpen(code).catch(function (e) { setMsg(e.message, true); toast(e.message, true); });
 }
+// ---------- 手元の在庫一覧（読んだらすぐ商品を出すため）。開いたとき・3分ごと・保存したときに新しくする ----------
+var INDEX = null, INDEX_AT = 0, INDEX_BUSY = false;
+function indexSet(d) {
+  var map = {};
+  (d.rows || []).forEach(function (r) { map[r.jan] = r; });
+  INDEX = { map: map, alias: d.alias || {}, zero: d.zero || {}, places: d.places, suppliers: d.suppliers, sync: d.sync };
+}
+function indexLoad() {
+  if (INDEX_BUSY || !CFG) return;
+  INDEX_BUSY = true;
+  api('scanIndex').then(function (d) {
+    INDEX_BUSY = false; INDEX_AT = Date.now(); indexSet(d);
+    try { localStorage.setItem('scanIndex', JSON.stringify({ u: CFG.u, d: d })); } catch (e) { /* 入らなくても動く */ }
+  }, function () { INDEX_BUSY = false; });
+}
+function indexFromCache() {
+  try { var c = JSON.parse(localStorage.getItem('scanIndex') || 'null'); if (c && CFG && c.u === CFG.u && c.d) indexSet(c.d); } catch (e) { /* 次に読み直す */ }
+}
+SHEET_HOOKS.localItem = function (code) {
+  if (!INDEX) return null;
+  var jan = INDEX.alias[code] || code, r = INDEX.map[jan], z = INDEX.zero[jan];
+  if (!r && !z) return null;
+  var tabs = r ? (r.tabs && r.tabs.length ? r.tabs : Object.keys(r.base || {})) : String(z.t || '').split(',').filter(String);
+  return { jan: jan, scanned: jan !== code ? code : '', name: r ? r.name : z.n, row: r ? { jan: jan, name: r.name, base: r.base, sup: r.sup, total: r.total, shipped: r.shipped, left: r.left, applied: r.applied, count: r.count } : null,
+    pending: [], received: [], tabs: tabs, registered: tabs.length > 0, places: INDEX.places, suppliers: INDEX.suppliers, sync: INDEX.sync, photo: r ? r.photo : null, shelf: r ? r.shelf : '' };
+};
+// 保存したら、その商品だけ手元の一覧も新しくする
+SHEET_HOOKS.saved = function (r) {
+  if (!INDEX) return;
+  var it = r && r.item;
+  if (it && it.row) INDEX.map[it.jan] = { jan: it.jan, name: it.name, base: it.row.base, sup: it.row.sup, total: it.row.total, shipped: it.row.shipped, left: it.row.left, applied: it.row.applied, count: it.row.count, tabs: it.tabs, photo: it.photo, shelf: it.shelf };
+  else if (r && r.url && r.jan && INDEX.map[r.jan]) INDEX.map[r.jan].photo = { url: r.url, at: r.at, by: r.by };
+};
 function pushHist(it) {
   HIST = [{ jan: it.jan, name: it.name, left: it.row ? it.row.left : null }].concat(HIST.filter(function (x) { return x.jan !== it.jan; })).slice(0, 10);
   document.getElementById('hist').innerHTML = HIST.length ? '<div class="hint">さっき読んだ商品</div>' + HIST.map(function (x) {
@@ -918,7 +1172,7 @@ function init() {
     var old = CFG; CFG = c;
     api('scanPing').then(function (r) {
       try { localStorage.setItem('scanCfg', JSON.stringify(c)); } catch (e) {}
-      m.textContent = ''; toast('「' + r.name + '」につなぎました'); showScreen(); if (!staffName()) askStaff(null);
+      m.textContent = ''; toast('「' + r.name + '」につなぎました'); showScreen(); indexLoad(); if (!staffName()) askStaff(null);
     }, function (e) { CFG = old; m.textContent = e.message; });
   });
   document.getElementById('camBtn').addEventListener('click', function () { WANT_CAM = true; startCam(); });
@@ -942,8 +1196,13 @@ function init() {
   initSheet();
   showStaff();
   document.getElementById('staffBtn').addEventListener('click', function () { stopCam(); askStaff(null); });
-  document.addEventListener('visibilitychange', function () { if (document.hidden) stopCam(); else if (WANT_CAM && document.getElementById('sheetBg').hidden && CFG) startCam(); });
-  if (CFG) { WANT_CAM = true; if (staffName()) startCam(); else askStaff(null); }
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) { stopCam(); return; }
+    if (WANT_CAM && document.getElementById('sheetBg').hidden && CFG) startCam();
+    if (CFG && Date.now() - INDEX_AT > 60000) indexLoad();
+  });
+  if (CFG) { WANT_CAM = true; if (staffName()) startCam(); else askStaff(null); indexFromCache(); indexLoad(); }
+  setInterval(function () { if (!document.hidden && CFG && Date.now() - INDEX_AT > 3 * 60000) indexLoad(); }, 30000);
 }
 init();
 </script>
