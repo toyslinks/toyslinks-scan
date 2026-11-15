@@ -315,7 +315,10 @@ function parseLink(s) {
   try { s = decodeURIComponent(s); } catch (e) { /* そのまま */ }
   // Apps Script の URL だけを受け付ける（テスト用に手元の 127.0.0.1 も）
   var m = /((?:https:\/\/script\.google\.com|http:\/\/127\.0\.0\.1:\d+)\/[^\s?#]*exec)\?(?:[^#\s]*&)?k=([\w-]+)/.exec(s);
-  return m ? { u: m[1], k: m[2] } : null;
+  if (!m) return null;
+  // 組織用のURL（/a/toyslinks.com/macros/… や /a/macros/toyslinks.com/…）は、ログインなしで使える形に直す
+  var u = m[1].replace(/\/a\/macros\/[^/]+\/s\//, '/macros/s/').replace(/\/a\/[^/]+\/macros\//, '/macros/');
+  return { u: u, k: m[2] };
 }
 function loadCfg() {
   var h = location.hash ? location.hash.slice(1) : '';
