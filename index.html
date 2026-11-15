@@ -115,6 +115,9 @@
   .ckBig.on .ckBox { background: var(--ok); border-color: var(--ok); color: #fff; }
   .ckDone { color: var(--ok); font-weight: 600; font-size: 14px; margin-bottom: 8px; }
   .go2.wide { width: 100%; flex: none; margin-top: 6px; }
+  .pedit .pwrap { position: relative; margin: 6px 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .pedit .pwrap img { width: 100%; display: block; }
+  .pedit .pwrap svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
 </style>
 <script>
 (function () { var t = null; try { t = localStorage.getItem('scanTheme'); } catch (e) {}
@@ -522,11 +525,12 @@ function blurResize2(m, sw, sh, w, h) {
   }
   return o;
 }
-// ---------- 箱（パッケージ）ごと残す ----------
+// ---------- 箱（パッケージ）を残す ----------
 // AI は箱に印刷されたキャラクターだけを「商品」と見ることがある。そこで：
 //  1. 写真のふちの色を「背景の色」として覚える
-//  2. AI が見つけた所から、つながっていて「背景の色ではない」所へ広げる（箱の残りの部分）
-//  3. 形がほぼ凸（箱など）なら、外側の線（凸包）でまるごと残す
+//  2. AI が少しでも商品と見た所の近く（3%まで）だけ、「背景の色ではない」所へ広げる（下に敷いた物などへははみ出さない）
+//  3. 形がほぼ凸（箱など）のときだけ、外側の線（凸包）で残す。背景を残さないよう、凸包で増える所が少ないときに限る
+//  手で直す（角を動かす）ときのために、外側の線を少ない角の多角形にしたもの（poly）も返す
 function blurHull(pts) {
   pts.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
   var cross = function (o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); };
@@ -536,8 +540,28 @@ function blurHull(pts) {
   up.pop(); lo.pop();
   return lo.concat(up);
 }
-// wide：「広めに残す」…背景の色とみなす色を少なくし、AI の弱い所からも広げ、いつも外側の線で少し広めに残す
-function blurRegion(src, m, S, wide) {
+function blurPolyArea(P) { var a = 0; for (var i = 0; i < P.length; i++) { var p = P[i], q = P[(i + 1) % P.length]; a += p[0] * q[1] - q[0] * p[1]; } return Math.abs(a) / 2; }
+// 角の少ない多角形にする（いちばん影響の小さい角から消す）
+function blurSimplify(P, k) {
+  P = P.slice();
+  while (P.length > k) {
+    var best = -1, bv = Infinity;
+    for (var i = 0; i < P.length; i++) {
+      var a = P[(i - 1 + P.length) % P.length], b = P[i], c = P[(i + 1) % P.length];
+      var v = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+      if (v < bv) { bv = v; best = i; }
+    }
+    P.splice(best, 1);
+  }
+  return P;
+}
+function blurDilate(Z, w, h, d) { // 0/1 の地図を d だけ太らせる（四角）
+  var t = new Uint8Array(w * h), o = new Uint8Array(w * h), x, y, s;
+  for (y = 0; y < h; y++) { s = 0; for (x = 0; x < Math.min(d, w); x++) s += Z[y * w + x]; for (x = 0; x < w; x++) { if (x + d < w) s += Z[y * w + x + d]; if (x - d - 1 >= 0) s -= Z[y * w + x - d - 1]; t[y * w + x] = s > 0 ? 1 : 0; } }
+  for (x = 0; x < w; x++) { s = 0; for (y = 0; y < Math.min(d, h); y++) s += t[y * w + x]; for (y = 0; y < h; y++) { if (y + d < h) s += t[(y + d) * w + x]; if (y - d - 1 >= 0) s -= t[(y - d - 1) * w + x]; o[y * w + x] = s > 0 ? 1 : 0; } }
+  return o;
+}
+function blurRegion(src, m, S) {
   var side = 192, sc = Math.min(1, side / Math.max(src.width, src.height));
   var w = Math.max(24, Math.round(src.width * sc)), h = Math.max(24, Math.round(src.height * sc)), n = w * h, i, x, y;
   var A = blurResize(m, S, w, h);
@@ -558,11 +582,13 @@ function blurRegion(src, m, S, wide) {
       sm[(rr << 6) | (gg << 3) | bb] += hist[b] * (dr || dg || db ? 0.3 : 1);
     }
   }
-  var thr = cnt * (wide ? 0.02 : 0.004), bg = new Uint8Array(n);
+  var thr = cnt * 0.004, bg = new Uint8Array(n);
   for (i = 0; i < n; i++) bg[i] = sm[bin[i]] > thr ? 1 : 0;
-  // 2. AI が見つけた所から広げる
+  // 2. 広げてよい範囲（AI が少しでも商品と見た所のまわり 3%）
+  var Z0 = new Uint8Array(n); for (i = 0; i < n; i++) Z0[i] = A[i] > 0.15 ? 1 : 0;
+  var Z = blurDilate(Z0, w, h, Math.max(1, Math.round(Math.max(w, h) * 0.03)));
   var R = new Uint8Array(n), st = [];
-  for (i = 0; i < n; i++) if (A[i] > (wide ? 0.3 : 0.6)) { R[i] = 1; st.push(i); }
+  for (i = 0; i < n; i++) if (A[i] > 0.6) { R[i] = 1; st.push(i); }
   var core = st.length;
   if (!core) return null;
   while (st.length) {
@@ -571,7 +597,7 @@ function blurRegion(src, m, S, wide) {
       var qx = px + ox, qy = py + oy;
       if (qx < 0 || qy < 0 || qx >= w || qy >= h) continue;
       var q = qy * w + qx;
-      if (!R[q] && (!bg[q] || A[q] > (wide ? 0.15 : 0.35))) { R[q] = 1; st.push(q); }
+      if (!R[q] && Z[q] && (!bg[q] || A[q] > 0.35)) { R[q] = 1; st.push(q); }
     }
   }
   // 中の穴を埋める
@@ -583,25 +609,38 @@ function blurRegion(src, m, S, wide) {
   }
   var area = 0;
   for (i = 0; i < n; i++) { if (!out0[i]) R[i] = 1; area += R[i]; }
-  if (area > n * (wide ? 0.97 : 0.9)) return null; // 背景の色をうまく覚えられなかった → AI のまま
+  if (area > n * 0.9) return null; // 背景の色をうまく覚えられなかった → AI のまま
   // 3. 外側の線（凸包）
   var pts = [];
   for (i = 0; i < n; i++) if (R[i]) { x = i % w; y = (i / w) | 0; if (x === 0 || y === 0 || x === w - 1 || y === h - 1 || !R[i - 1] || !R[i + 1] || !R[i - w] || !R[i + w]) pts.push([x + 0.5, y + 0.5]); }
   if (pts.length < 3) return null;
-  var hull = blurHull(pts), ha = 0;
-  for (i = 0; i < hull.length; i++) { var a1 = hull[i], a2 = hull[(i + 1) % hull.length]; ha += a1[0] * a2[1] - a2[0] * a1[1]; }
-  ha = Math.abs(ha) / 2;
-  var solid = ha ? area / ha : 0, out = new Float32Array(n), box = wide || solid > 0.72;
+  var hull = blurHull(pts), ha = blurPolyArea(hull);
+  var solid = ha ? area / ha : 0, out = new Float32Array(n), box = solid > 0.9;
   if (box) {
     var pc = blurCanvas(w, h), px2 = pc.getContext('2d');
-    px2.fillStyle = '#fff'; px2.strokeStyle = '#fff'; px2.lineJoin = 'round'; px2.beginPath(); px2.moveTo(hull[0][0], hull[0][1]);
+    px2.fillStyle = '#fff'; px2.beginPath(); px2.moveTo(hull[0][0], hull[0][1]);
     for (i = 1; i < hull.length; i++) px2.lineTo(hull[i][0], hull[i][1]);
     px2.closePath(); px2.fill();
-    if (wide) { px2.lineWidth = Math.max(2, Math.round(Math.max(w, h) * 0.04)); px2.stroke(); }
     var pd = px2.getImageData(0, 0, w, h).data;
     for (i = 0; i < n; i++) out[i] = Math.max(R[i], pd[i * 4 + 3] / 255);
   } else for (i = 0; i < n; i++) out[i] = R[i];
-  return { m: out, w: w, h: h, box: box, cover: area / n, grew: area / core, solid: solid };
+  var poly = blurSimplify(hull, box ? 6 : 8).map(function (pt) { return [pt[0] / w, pt[1] / h]; });
+  return { m: out, w: w, h: h, box: box, cover: area / n, grew: area / core, solid: solid, poly: poly };
+}
+// 手で直した範囲（多角形。0〜1 の座標）で、まわりをぼかす
+function blurWithPolygon(poly) {
+  var src = BLUR.last && BLUR.last.src;
+  if (!src || !poly || poly.length < 3) return null;
+  var W = src.width, H = src.height, r = Math.min(1, 512 / Math.max(W, H)), w = Math.max(16, Math.round(W * r)), h = Math.max(16, Math.round(H * r));
+  var c = blurCanvas(w, h), x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.beginPath(); x.moveTo(poly[0][0] * w, poly[0][1] * h);
+  for (var i = 1; i < poly.length; i++) x.lineTo(poly[i][0] * w, poly[i][1] * h);
+  x.closePath(); x.fill();
+  var d = x.getImageData(0, 0, w, h).data, p = new Float32Array(w * h);
+  for (i = 0; i < w * h; i++) p[i] = d[i * 4 + 3] / 255;
+  var q = blurGuided(blurGray(src, w, h), p, w, h, 2, 1e-2); // ふちを写真の境目に少しだけ合わせる
+  for (i = 0; i < q.length; i++) { var a = Math.min(1, Math.max(0, (q[i] - 0.35) / 0.3)); q[i] = a * a * (3 - 2 * a); }
+  return { dataUrl: blurCompose(src, q, w, h).toDataURL('image/jpeg', 0.88), mode: 'manual', poly: poly, note: '', orig: src.toDataURL('image/jpeg', 0.88) };
 }
 // 平均（半径 r の四角）を積分画像で
 function blurBox(a, w, h, r) {
@@ -661,7 +700,7 @@ function blurCompose(src, alpha, w, h) {
   var full = bx.getImageData(0, 0, bw, bh);
   bx.globalCompositeOperation = 'destination-out'; bx.drawImage(mc, 0, 0, bw, bh);
   var only = bx.getImageData(0, 0, bw, bh);
-  var rad = Math.max(3, Math.round(Math.max(bw, bh) / 60));
+  var rad = Math.max(4, Math.round(Math.max(bw, bh) / 36)); // 背景が何か分からないくらい強くぼかす
   var A = blurRGBA(full, rad, 3), B = blurRGBA(only, rad, 3), out = bx.createImageData(bw, bh), n = bw * bh, k;
   for (i = 0; i < n; i++) {
     var wb = Math.min(1, B[3][i] * 2.5); // 背景だけをぼかした色を優先（商品の色が混ざらない）
@@ -696,14 +735,14 @@ function blurEllipse(w, h) {
 }
 function blurTimeout(p, ms, msg) { return Promise.race([p, new Promise(function (ok, ng) { setTimeout(function () { ng(new Error(msg)); }, ms); })]); }
 // 写真のファイル → {dataUrl（保存する写真）, mode: 'box'|'ai'|'simple'|'none', note, orig（ぼかしていない写真。「ぼかさずに保存する」用）}
-function blurPhoto(file, max, opt) {
-  var t0 = Date.now(), wide = !!(opt && opt.wide);
+function blurPhoto(file, max) {
+  var t0 = Date.now();
   var same = BLUR.last && BLUR.last.file === file;
   return (same ? Promise.resolve(BLUR.last.src) : blurFileToCanvas(file, max || 2000)).then(function (src) {
     var W = src.width, H = src.height, r = Math.min(1, 512 / Math.max(W, H)), w = Math.max(16, Math.round(W * r)), h = Math.max(16, Math.round(H * r));
     var jpeg = function (c) { return c.toDataURL('image/jpeg', 0.88); };
     var simple = function (why) {
-      return { dataUrl: jpeg(blurCompose(src, blurEllipse(w, h), w, h)), mode: 'simple', note: why + '真ん中以外をぼかしました（商品を真ん中に大きく写すときれいになります）', orig: jpeg(src), ms: Date.now() - t0 };
+      return { dataUrl: jpeg(blurCompose(src, blurEllipse(w, h), w, h)), mode: 'simple', note: why + '真ん中以外をぼかしました（「範囲を手で直す」で商品のふちに合わせられます）', orig: jpeg(src), poly: [[0.2, 0.12], [0.8, 0.12], [0.8, 0.88], [0.2, 0.88]], ms: Date.now() - t0 };
     };
     var mk = same && BLUR.last.m ? Promise.resolve(BLUR.last.m) : blurTimeout(blurMask(src), 90000, 'AIの読み込みに時間がかかっています');
     BLUR.last = { file: file, src: src, m: same ? BLUR.last.m : null };
@@ -713,12 +752,14 @@ function blurPhoto(file, max, opt) {
       if (!cl || cl.cover < 0.02) return simple('AIで商品を見つけられなかったので、');
       if (cl.cover > 0.93) return { dataUrl: jpeg(src), mode: 'none', note: '商品が写真いっぱいに写っているので、ぼかしていません', orig: '', ms: Date.now() - t0 };
       var reg = null;
-      try { reg = blurRegion(src, cl.m, BLUR.S, wide); } catch (e) { reg = null; }
+      try { reg = blurRegion(src, cl.m, BLUR.S); } catch (e) { reg = null; }
       if (reg && reg.cover > 0.93) return { dataUrl: jpeg(src), mode: 'none', note: '商品が写真いっぱいに写っているので、ぼかしていません', orig: '', ms: Date.now() - t0 };
       var p = reg ? blurResize2(reg.m, reg.w, reg.h, w, h) : blurResize(cl.m, BLUR.S, w, h);
       var q = blurGuided(blurGray(src, w, h), p, w, h, Math.max(2, Math.round(Math.max(w, h) / 80)), 1e-3);
-      for (var i = 0; i < q.length; i++) { var a = Math.min(1, Math.max(0, (q[i] - 0.3) / 0.4)); q[i] = a * a * (3 - 2 * a); }
-      return { dataUrl: jpeg(blurCompose(src, q, w, h)), mode: reg && reg.box ? 'box' : 'ai', wide: wide, note: '', orig: jpeg(src), cover: reg ? reg.cover : cl.cover, region: reg ? { box: reg.box, grew: reg.grew, solid: reg.solid } : null, ms: Date.now() - t0 };
+      // ふちは背景を残さない側に（少し内側で切る）
+      for (var i = 0; i < q.length; i++) { var a = Math.min(1, Math.max(0, (q[i] - 0.4) / 0.3)); q[i] = a * a * (3 - 2 * a); }
+      var poly = reg ? reg.poly : null;
+      return { dataUrl: jpeg(blurCompose(src, q, w, h)), mode: reg && reg.box ? 'box' : 'ai', note: '', orig: jpeg(src), poly: poly, cover: reg ? reg.cover : cl.cover, region: reg ? { box: reg.box, grew: reg.grew, solid: reg.solid } : null, ms: Date.now() - t0 };
     }, function (e) { return simple('AIを使えなかったので（' + ((e && e.message) || 'エラー') + '）、'); });
   });
 }
@@ -917,7 +958,7 @@ function savePhoto(btn, dataUrl, mode) {
   out.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
   var st = document.createElement('div'); st.className = 'hint'; st.textContent = 'アップロードしています…'; out.appendChild(st);
   var slot = it._pslot || 1;
-  api('scanPhoto', { jan: it.jan, name: it.name || '', data: dataUrl, mime: 'image/jpeg', by: staffName(), blur: mode === 'ai' ? 'AI' : mode === 'simple' ? '簡易（真ん中）' : mode === 'box' ? 'AI（箱）' : 'なし', slot: slot }).then(function (r) {
+  api('scanPhoto', { jan: it.jan, name: it.name || '', data: dataUrl, mime: 'image/jpeg', by: staffName(), blur: mode === 'ai' ? 'AI' : mode === 'simple' ? '簡易（真ん中）' : mode === 'box' ? 'AI（箱）' : mode === 'manual' ? '手で範囲' : 'なし', slot: slot }).then(function (r) {
     r.jan = r.jan || it.jan;
     out = photoOut() || out;
     out.innerHTML = photoDoneHtml(r, dataUrl);
@@ -988,8 +1029,13 @@ function initSheet() {
       if (PHOTO) savePhoto(t, PHOTO.dataUrl, PHOTO.mode);
     } else if (t.closest('[data-psaveorig]')) {
       if (PHOTO && PHOTO.orig) savePhoto(t, PHOTO.orig, 'none');
-    } else if (t.closest('[data-pwide]')) {
-      if (PHOTO && PHOTO.file) runBlur(PHOTO.file, { wide: !PHOTO.wide });
+    } else if (t.closest('[data-pedit]')) {
+      if (PHOTO) openPolyEditor();
+    } else if (t.closest('[data-pok]')) {
+      var res2 = blurWithPolygon(POLY.pts.map(function (q) { return [q[0] / POLY.W, q[1] / POLY.H]; }));
+      if (res2) { res2.file = PHOTO && PHOTO.file; showPreview(res2); }
+    } else if (t.closest('[data-pcancel]')) {
+      if (POLY.prev) showPreview(POLY.prev);
     }
   });
   bg.addEventListener('input', function (ev) { if (ev.target.matches && ev.target.matches('input, select')) ev.target.dataset.touched = '1'; });
@@ -997,7 +1043,52 @@ function initSheet() {
     if (ev.target.matches && ev.target.matches('select')) ev.target.dataset.touched = '1';
   });
 }
-// 写真 → 背景をぼかして確認の表示（opt.wide：広めに残す）
+// 写真 → 背景をぼかして確認の表示
+// 確認の表示（ぼかした写真・保存・撮り直し・範囲を手で直す）
+function showPreview(res) {
+  var out = photoOut(); if (!out) return;
+  PHOTO = res;
+  var good = res.mode === 'ai' || res.mode === 'box' || res.mode === 'manual';
+  var label = res.mode === 'manual' ? '手で直した範囲の外をぼかしました' : res.mode === 'box' ? '箱を残して、まわりをぼかしました' : res.mode === 'ai' ? '商品以外をぼかしました' : res.note;
+  out.innerHTML = '<div class="photoPrev"><img src="' + res.dataUrl + '" alt="ぼかした写真"><div class="hint' + (good ? '' : ' warnTxt') + '">' + esc(label) + '</div>' +
+    '<div class="addRow"><button type="button" class="go" data-psave="1">この写真で保存</button><label class="go2 photoBtn">撮り直す<input type="file" accept="image/*" capture="environment" class="pp" hidden></label></div>' +
+    (res.poly ? '<button type="button" class="go2 wide" data-pedit="1">背景が残っている・商品が欠けている → 範囲を手で直す</button>' : '') +
+    (res.orig ? '<button type="button" class="linkBtn" data-psaveorig="1">ぼかさずに保存する</button>' : '') + '</div>';
+  wirePhotoInputs();
+  var pv = out.querySelector('.photoPrev'); if (pv) pv.scrollIntoView({ block: 'nearest' });
+}
+// 範囲を手で直す：商品のまわりの線の角（○）を指で動かす。線の外がぼける
+var POLY = { pts: [], W: 1000, H: 1000, prev: null, drag: -1 };
+function polyDraw() {
+  var svg = document.querySelector('#sheetBody .pedit svg'); if (!svg) return;
+  var P = POLY.pts, W = POLY.W, H = POLY.H, r = Math.max(W, H) * 0.028;
+  var path = 'M0 0H' + W + 'V' + H + 'H0Z M' + P.map(function (q) { return q[0].toFixed(1) + ' ' + q[1].toFixed(1); }).join(' L') + 'Z';
+  svg.innerHTML = '<path d="' + path + '" fill="rgba(0,0,0,.5)" fill-rule="evenodd"></path>' +
+    '<polygon points="' + P.map(function (q) { return q[0].toFixed(1) + ',' + q[1].toFixed(1); }).join(' ') + '" fill="none" stroke="#4493f8" stroke-width="' + (Math.max(W, H) * 0.006).toFixed(1) + '"></polygon>' +
+    P.map(function (q, k) { return '<circle data-k="' + k + '" cx="' + q[0].toFixed(1) + '" cy="' + q[1].toFixed(1) + '" r="' + r.toFixed(1) + '" fill="rgba(68,147,248,.35)" stroke="#fff" stroke-width="' + (r * 0.18).toFixed(1) + '"></circle>'; }).join('');
+}
+function openPolyEditor() {
+  var res = PHOTO, out = photoOut(), src = BLUR.last && BLUR.last.src;
+  if (!res || !out || !src) return;
+  POLY.prev = res; POLY.W = src.width; POLY.H = src.height;
+  POLY.pts = (res.poly || [[0.2, 0.12], [0.8, 0.12], [0.8, 0.88], [0.2, 0.88]]).map(function (q) { return [q[0] * POLY.W, q[1] * POLY.H]; });
+  out.innerHTML = '<div class="pedit"><div class="pwrap"><img src="' + (res.orig || res.dataUrl) + '" alt=""><svg viewBox="0 0 ' + POLY.W + ' ' + POLY.H + '" preserveAspectRatio="none"></svg></div>' +
+    '<div class="hint">青い線の角（○）を指で動かして、商品のふちにぴったり合わせてください。線の外がすべてぼけます</div>' +
+    '<div class="addRow"><button type="button" class="go" data-pok="1">この範囲でぼかす</button><button type="button" class="go2" data-pcancel="1">戻る</button></div></div>';
+  polyDraw();
+  var svg = out.querySelector('svg');
+  var toXY = function (ev) { var b = svg.getBoundingClientRect(); return [Math.min(POLY.W, Math.max(0, (ev.clientX - b.left) / b.width * POLY.W)), Math.min(POLY.H, Math.max(0, (ev.clientY - b.top) / b.height * POLY.H))]; };
+  svg.addEventListener('pointerdown', function (ev) {
+    var p = toXY(ev), best = -1, bd = Infinity;
+    POLY.pts.forEach(function (q, k) { var d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < bd) { bd = d; best = k; } });
+    if (bd > Math.max(POLY.W, POLY.H) * 0.12) return; // 角から遠いところは動かさない（画面をスクロールできる）
+    POLY.drag = best; svg.setPointerCapture(ev.pointerId); ev.preventDefault();
+  });
+  svg.addEventListener('pointermove', function (ev) { if (POLY.drag < 0) return; POLY.pts[POLY.drag] = toXY(ev); polyDraw(); ev.preventDefault(); });
+  var up = function () { POLY.drag = -1; };
+  svg.addEventListener('pointerup', up); svg.addEventListener('pointercancel', up);
+  out.querySelector('.pedit').scrollIntoView({ block: 'nearest' });
+}
 // 表示を入れ替えた（最新に更新した）あとでも書けるように、毎回いまの欄を探す
 function photoOut() { return document.querySelector('#sheetBody .photoOut'); }
 function runBlur(f, opt) {
@@ -1009,16 +1100,7 @@ function runBlur(f, opt) {
       blurPhoto(f, 2000, opt).then(function (res) {
         res.file = f;
         if (!ITEM || ITEM.jan !== it.jan) return;
-        out = photoOut(); if (!out) return;
-        PHOTO = res;
-        var good = res.mode === 'ai' || res.mode === 'box';
-        var label = res.mode === 'box' ? '箱ごと残して、まわりをぼかしました' : res.mode === 'ai' ? '商品以外をぼかしました' : res.note;
-        out.innerHTML = '<div class="photoPrev"><img src="' + res.dataUrl + '" alt="ぼかした写真"><div class="hint' + (good ? '' : ' warnTxt') + '">' + esc(label) + (good ? '（商品が欠けていたら「ぼかさずに保存する」か撮り直し）' : '') + '</div>' +
-          '<div class="addRow"><button type="button" class="go" data-psave="1">この写真で保存</button><label class="go2 photoBtn">撮り直す<input type="file" accept="image/*" capture="environment" class="pp" hidden></label></div>' +
-          (good ? '<button type="button" class="go2 wide" data-pwide="1">' + (res.wide ? 'せまく戻す（商品の形に合わせる）' : '商品が欠けている → 広めに残す（箱ごと）') + '</button>' : '') +
-          (res.orig ? '<button type="button" class="linkBtn" data-psaveorig="1">ぼかさずに保存する</button>' : '') + '</div>';
-        wirePhotoInputs();
-        var pv = out.querySelector('.photoPrev'); if (pv) pv.scrollIntoView({ block: 'nearest' });
+        showPreview(res);
       }).catch(function (e) { out = photoOut(); if (out) out.innerHTML = '<div class="saveMsg">' + esc(e.message) + '</div>'; });
     }, 30);
 }
