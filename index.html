@@ -118,6 +118,13 @@
   .pedit .pwrap { position: relative; margin: 6px 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
   .pedit .pwrap img { width: 100%; display: block; }
   .pedit .pwrap svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+
+  .pthumb { position: relative; }
+  .pup { position: absolute; top: 3px; right: 3px; font-size: 10px; padding: 0 5px; border-radius: 8px; background: rgba(43,108,176,.9); color: #fff; }
+  .pup.ng { background: rgba(200,40,40,.92); }
+  .upChip { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom)); z-index: 60; max-width: calc(100% - 32px); padding: 8px 14px; border-radius: 18px; border: 0; font: inherit; font-size: 13px; background: #2b6cb0; color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+  .upChip.ng { background: #c53030; }
+  .upChip[hidden] { display: none; }
 </style>
 <script>
 (function () { var t = null; try { t = localStorage.getItem('scanTheme'); } catch (e) {}
@@ -640,7 +647,7 @@ function blurWithPolygon(poly) {
   for (i = 0; i < w * h; i++) p[i] = d[i * 4 + 3] / 255;
   var q = blurGuided(blurGray(src, w, h), p, w, h, 2, 1e-2); // ふちを写真の境目に少しだけ合わせる
   for (i = 0; i < q.length; i++) { var a = Math.min(1, Math.max(0, (q[i] - 0.35) / 0.3)); q[i] = a * a * (3 - 2 * a); }
-  return { dataUrl: blurCompose(src, q, w, h).toDataURL('image/jpeg', 0.88), mode: 'manual', poly: poly, note: '', orig: src.toDataURL('image/jpeg', 0.88) };
+  return { dataUrl: blurCompose(src, q, w, h).toDataURL('image/jpeg', 0.85), mode: 'manual', poly: poly, note: '', orig: src.toDataURL('image/jpeg', 0.85) };
 }
 // 平均（半径 r の四角）を積分画像で
 function blurBox(a, w, h, r) {
@@ -740,7 +747,7 @@ function blurPhoto(file, max) {
   var same = BLUR.last && BLUR.last.file === file;
   return (same ? Promise.resolve(BLUR.last.src) : blurFileToCanvas(file, max || 2000)).then(function (src) {
     var W = src.width, H = src.height, r = Math.min(1, 512 / Math.max(W, H)), w = Math.max(16, Math.round(W * r)), h = Math.max(16, Math.round(H * r));
-    var jpeg = function (c) { return c.toDataURL('image/jpeg', 0.88); };
+    var jpeg = function (c) { return c.toDataURL('image/jpeg', 0.85); };
     var simple = function (why) {
       return { dataUrl: jpeg(blurCompose(src, blurEllipse(w, h), w, h)), mode: 'simple', note: why + '真ん中以外をぼかしました（「範囲を手で直す」で商品のふちに合わせられます）', orig: jpeg(src), poly: [[0.2, 0.12], [0.8, 0.12], [0.8, 0.88], [0.2, 0.88]], ms: Date.now() - t0 };
     };
@@ -791,6 +798,8 @@ function placeOptions(it, cur) {
   var ps = (it.places && it.places.length ? it.places : ['芝公園', '佐川', 'その他']);
   return ps.map(function (p) { return '<option value="' + esc(p) + '"' + (p === cur ? ' selected' : '') + '>' + esc(PLACE_LABEL[p] || p) + '</option>'; }).join('');
 }
+// 在庫リストのその場所の数
+function invNowText(base, place) { return '在庫リスト（' + esc(PLACE_LABEL[place] || place) + '）：' + (base[place] != null ? '<b>' + base[place] + '</b> 個' : 'この場所の行はありません（在庫リストに登録してから）'); }
 function qtyBox(cls, v) { return '<span class="qty"><button type="button" data-step="-1">−</button><input class="' + cls + '" inputmode="numeric" value="' + esc(v) + '"><button type="button" data-step="1">＋</button></span>'; }
 function openSheet(html) {
   document.getElementById('sheetBody').innerHTML = html;
@@ -835,6 +844,8 @@ function newItemForm(it, open) {
 // 商品写真の4枚（表・裏・側面1・側面2）
 var PSLOTS = ['表', '裏', '側面1', '側面2'];
 function photoAt(it, k) {
+  var up = upPending(it.jan, k);
+  if (up) return { k: k, label: PSLOTS[k - 1], url: '', local: up.req.data, pending: true, failed: !!up.failed };
   var p = (it.photos || [])[k - 1];
   if (p && (p.url || p.local)) return p;
   return k === 1 && it.photo && it.photo.url ? it.photo : null;
@@ -845,7 +856,7 @@ function photoSlotsHtml(it) {
     var k = i + 1, p = photoAt(it, k);
     var src = p ? (p.local || driveThumb(p.url, 160)) : '';
     return '<button type="button" class="pthumb' + (cur === k ? ' on' : '') + '" data-pslot="' + k + '" title="' + esc(lb + (p && p.at ? ' 撮影 ' + p.at + (p.by ? '・' + p.by : '') : '')) + '">' +
-      (src ? '<img src="' + esc(src) + '" alt="" loading="lazy">' : '<span class="pempty">まだ</span>') + '<span class="plabel">' + lb + '</span></button>';
+      (src ? '<img src="' + esc(src) + '" alt="" loading="lazy">' : '<span class="pempty">まだ</span>') + (p && p.pending ? '<span class="pup' + (p.failed ? ' ng' : '') + '">' + (p.failed ? '送れず' : '送信中') + '</span>' : '') + '<span class="plabel">' + lb + '</span></button>';
   }).join('');
 }
 function photoBtnText(it) {
@@ -873,7 +884,7 @@ function showItem() {
   }
   var c0 = r && r.count ? r.count : null;
   h += '<div class="shStock"><div class="stkRow"><div><div class="lbl">いまの在庫（帳簿）' + (it.loading ? '<span class="busy" style="margin-left:8px">最新を確認中</span>' : '') + '</div><div class="num">' + (r ? r.left : 0) + '<small>個</small></div></div>' +
-    '<button type="button" class="ckBig' + (c0 ? ' on' : '') + '" data-cnt="1" title="押すと、下の実数（ふつうは帳簿の数）で棚卸し済みにします"><span class="ckBox">' + (c0 ? '✓' : '') + '</span><span class="ckTx">棚卸し' + (c0 ? '済み<small>' + esc(String(c0.at).slice(5)) + '</small>' : '') + '</span></button></div>' +
+    '<button type="button" class="ckBig' + (c0 ? ' on' : '') + '" data-cnt="1" title="下の「場所」と「数えた数」で棚卸しします（在庫リストのその場所の数量を、数えた数にします）"><span class="ckBox">' + (c0 ? '✓' : '') + '</span><span class="ckTx">棚卸し' + (c0 ? '済み<small>' + esc(String(c0.at).slice(5)) + '</small>' : '') + '</span></button></div>' +
     (r ? '<div>' + supChips(r.sup, r.base, r.applied) + (r.shipped ? '<span class="sup">Amazon出荷 −' + r.shipped + '</span>' : '') + '</div>' : '') + '</div>';
   if (it.loading) h += '<div class="shSec"><div class="hint busy" style="margin:0">メールで出荷済みの入荷などを確認しています…</div></div>';
   else if (!it.registered) h += '<div class="shSec"><div class="addRow"><span class="hint" style="flex:1 1 60%;margin:0">在庫リスト TOYSLINKS にまだ無い商品です' + (it.sync && r && r.left > 0 ? '（届いた分は次の集計で「その他在庫」に自動で入ります）' : '') + '</span><button type="button" class="go2" data-newopen="1">在庫リストに登録</button></div></div>' + newItemForm(it, false);
@@ -888,12 +899,16 @@ function showItem() {
     qtyBox('nq', 1) + '<button type="button" class="go" data-add="1">入荷を登録</button></div>' +
     '<div class="hint" style="margin:4px 0 0">マイルストン・LEXACTはメールから自動で数えるので、上に出ていないときだけ使ってください</div></div>';
   var c = r && r.count ? r.count : null;
-  var place = (c && c.place) || (it.tabs && it.tabs[0]) || 'その他';
-  h += '<div class="shSec"><div class="shT">棚卸し（実数・置いた場所）</div>' +
-    (c ? '<div class="ckDone">✓ 棚卸し済み ' + esc(c.at) + (c.memo ? '・' + esc(c.memo) : '') + '<div class="hint" style="margin:0">実数 ' + c.count + '（帳簿 ' + c.book + (c.count !== c.book ? '・差 ' + (c.count > c.book ? '+' : '') + (c.count - c.book) : '') + '）' + (c.place ? '・' + esc(c.place) : '') + (c.shelf ? '・棚番 ' + esc(c.shelf) : '') + '</div></div>' : '') +
+  // 場所：前に棚卸しした場所（そこに在庫リストの行があれば）→ いちばん多くある場所 → 登録してある場所
+  var base = (r && r.base) || {};
+  var most = Object.keys(base).sort(function (a, b) { return base[b] - base[a]; })[0];
+  var place = (c && c.place && base[c.place] != null ? c.place : '') || most || (it.tabs && it.tabs[0]) || (c && c.place) || 'その他';
+  h += '<div class="shSec cntSec"><div class="shT">棚卸し（場所を選んで、数えた数を入れる）</div>' +
+    (c ? '<div class="ckDone">✓ 棚卸し済み ' + esc(c.at) + (c.memo ? '・' + esc(c.memo) : '') + '<div class="hint" style="margin:0">数えた数 ' + c.count + '（在庫リスト ' + c.book + (c.count !== c.book ? ' → ' + c.count : '') + '）' + (c.place ? '・' + esc(c.place) : '') + (c.shelf ? '・棚番 ' + esc(c.shelf) : '') + '</div></div>' : '') +
     '<div class="addRow"><select class="cp" aria-label="場所">' + placeOptions(it, place) + '</select><input class="cs" placeholder="棚番（例 A-3）" value="' + esc(it.shelf || '') + '" aria-label="棚番"></div>' +
-    '<div class="addRow"><span class="hint" style="margin:0">実数</span>' + qtyBox('cq', r ? Math.max(r.left, 0) : 0) + '<button type="button" class="go2" data-cnt="1">' + (c ? 'もう一度 棚卸し済みにする' : 'この数で棚卸し済みにする') + '</button></div>' +
-    '<div class="hint" style="margin:4px 0 0">数が帳簿と同じなら、上の「棚卸し」を押すだけでOK。違うときは実数を直してから押してください</div></div>';
+    '<div class="hint invNow" style="margin:2px 0 0">' + invNowText(base, place) + '</div>' +
+    '<div class="addRow"><span class="hint" style="margin:0">数えた数</span>' + qtyBox('cq', base[place] || 0) + '<button type="button" class="go2" data-cnt="1">在庫リストをこの数にする</button></div>' +
+    '<div class="hint" style="margin:4px 0 0">選んだ場所に実際にある数を数えて入れてください。押すと、在庫リスト（選んだ場所）の数量がこの数になります（同じ数なら棚卸し済みにするだけ）</div></div>';
   h += '<div class="shSec" id="photoSec"><div class="shT">商品写真（4枚まで：表・裏・側面1・側面2）</div><div class="pslots">' + photoSlotsHtml(it) + '</div>' +
     '<div class="addRow"><label class="go photoBtn" id="photoBtnMain">' + photoBtnText(it) + '<input type="file" accept="image/*" capture="environment" class="pp" hidden></label></div>' +
     '<div class="hint" style="margin:4px 0 0">撮るたびに 表→裏→側面1→側面2 の順に進みます（枠を押すと、その写真を撮り直せます）。背景はAIで自動でぼかします（初回だけ読み込みに少しかかります）。ドライブの「在庫リストTOYSLINKS」→ 撮影日のフォルダに「' + esc((it.name || '商品') + ' ' + it.jan) + '.jpg」（裏・側面は「_裏」などを付けて）保存し、在庫リスト TOYSLINKS の 商品画像（A列＝表）・画像2〜画像4（裏・側面）・撮影日・撮影者を書き換えます</div><div class="photoOut"></div></div>';
@@ -951,32 +966,83 @@ function photoDoneHtml(r, dataUrl) {
   return '<div class="photoDone"><img src="' + dataUrl + '" alt=""><div>' + esc(r.label || '') + 'を保存しました：<a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.fileName) + '</a><div class="hint" style="margin:0">' + esc(r.folder) +
     (r.rows ? '・在庫リストの' + esc(r.col || '商品画像') + 'を ' + r.rows + ' 行置き換え' : '') + (r.by ? '・撮影 ' + esc(r.by) : '') + '</div>' + (r.note ? '<div class="hint" style="margin:0;color:var(--warn)">' + esc(r.note) + '</div>' : '') + '</div></div>';
 }
-function savePhoto(btn, dataUrl, mode) {
-  var it = ITEM, out = document.querySelector('#sheetBody .photoOut');
-  if (!it || !out) return;
-  btn.disabled = true;
-  out.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
-  var st = document.createElement('div'); st.className = 'hint'; st.textContent = 'アップロードしています…'; out.appendChild(st);
-  var slot = it._pslot || 1;
-  api('scanPhoto', { jan: it.jan, name: it.name || '', data: dataUrl, mime: 'image/jpeg', by: staffName(), blur: mode === 'ai' ? 'AI' : mode === 'simple' ? '簡易（真ん中）' : mode === 'box' ? 'AI（箱）' : mode === 'manual' ? '手で範囲' : 'なし', slot: slot }).then(function (r) {
-    r.jan = r.jan || it.jan;
-    out = photoOut() || out;
-    out.innerHTML = photoDoneHtml(r, dataUrl);
-    if (ITEM && ITEM.jan === it.jan) {
+// ---------- 写真は裏でアップロード（v1.37）：「保存」を押したらすぐ次の写真・次の商品へ。失敗しても自動でやり直す ----------
+//  送る前の写真はこの端末（IndexedDB）にも置いておき、ページを開き直しても続きを送る
+var UPQ = [], UP_BUSY = false, UP_DB = null, UP_DONE = {}; // UP_DONE：送り終わった写真（開き直しの続きで二重に送らない）
+function upPending(jan, k) { for (var i = UPQ.length - 1; i >= 0; i--) if (UPQ[i].jan === jan && UPQ[i].slot === k) return UPQ[i]; return null; }
+function upDb() {
+  if (UP_DB) return UP_DB;
+  UP_DB = new Promise(function (ok, ng) {
+    try {
+      var rq = indexedDB.open('scanUploads', 1);
+      rq.onupgradeneeded = function () { rq.result.createObjectStore('q', { keyPath: 'id' }); };
+      rq.onsuccess = function () { ok(rq.result); };
+      rq.onerror = function () { ng(rq.error); };
+    } catch (e) { ng(e); }
+  });
+  return UP_DB;
+}
+function upStore(fn) { return upDb().then(function (db) { return new Promise(function (ok, ng) { var tx = db.transaction('q', 'readwrite'); var r = fn(tx.objectStore('q')); tx.oncomplete = function () { ok(r && r.result); }; tx.onerror = function () { ng(tx.error); }; }); }).catch(function () { return null; }); }
+function upSave(job) { return upStore(function (st) { return st.put(job); }); }
+function upDel(id) { return upStore(function (st) { return st.delete(id); }); }
+function upResume() {
+  upStore(function (st) { return st.getAll(); }).then(function (all) {
+    (all || []).forEach(function (j) { if (UP_DONE[j.id]) { upDel(j.id); return; } if (!UPQ.some(function (x) { return x.id === j.id; })) { j.failed = false; j.tries = 0; UPQ.push(j); } });
+    upKick();
+  });
+}
+function upShow() {
+  var el = document.getElementById('upChip');
+  if (!el) { el = document.createElement('button'); el.type = 'button'; el.id = 'upChip'; el.className = 'upChip'; document.body.appendChild(el); el.addEventListener('click', function () { UPQ.forEach(function (j) { if (j.failed) { j.failed = false; j.tries = 0; } }); upKick(); }); }
+  var ng = UPQ.filter(function (j) { return j.failed; }).length, wait = UPQ.length - ng;
+  el.hidden = !UPQ.length;
+  el.className = 'upChip' + (ng ? ' ng' : '');
+  el.textContent = ng ? '写真 ' + ng + ' 枚を送れませんでした（押してもう一度）' + (wait ? '・送信中 ' + wait + ' 枚' : '') : '写真を送信中 ' + wait + ' 枚…（このまま次へ進んでOK）';
+}
+function upKick() {
+  upShow();
+  if (UP_BUSY) return;
+  var job = UPQ.filter(function (j) { return !j.failed; })[0];
+  if (!job) return;
+  UP_BUSY = true;
+  api('scanPhoto', job.req).then(function (r) {
+    UP_BUSY = false;
+    UPQ = UPQ.filter(function (x) { return x !== job; });
+    UP_DONE[job.id] = true;
+    upDel(job.id);
+    r.jan = r.jan || job.jan;
+    if (ITEM && ITEM.jan === job.jan) {
       var ps = ITEM.photos = (ITEM.photos || []).slice();
-      ps[slot - 1] = { k: slot, label: PSLOTS[slot - 1], url: r.url, at: r.at, by: r.by, local: dataUrl };
-      if (slot === 1) ITEM.photo = { url: r.url, at: r.at, by: r.by };
-      if (slot < 4) ITEM._pslot = slot + 1; // 次は 裏 → 側面1 → 側面2
+      ps[job.slot - 1] = { k: job.slot, label: PSLOTS[job.slot - 1], url: r.url, at: r.at, by: r.by };
+      if (job.slot === 1) ITEM.photo = { url: r.url, at: r.at, by: r.by };
       renderPhotoSlots();
-      var pb = document.getElementById('photoBtnMain'); if (pb && slot < 4) pb.classList.add('flash');
     }
     if (SHEET_HOOKS.saved) SHEET_HOOKS.saved(r);
-    toast('写真を保存しました');
+    if (r.note) toast(job.label + '：' + r.note, true);
+    upKick();
   }, function (e) {
-    out = photoOut() || out;
-    st.remove(); out.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
-    var m = document.createElement('div'); m.className = 'saveMsg'; m.textContent = e.message; out.appendChild(m);
+    UP_BUSY = false;
+    job.tries = (job.tries || 0) + 1; job.err = e && e.message;
+    if (job.tries >= 3) { job.failed = true; renderPhotoSlots(); }
+    upShow();
+    setTimeout(upKick, job.failed ? 0 : 4000 * job.tries);
   });
+}
+window.addEventListener('beforeunload', function (ev) { if (UPQ.length) { ev.preventDefault(); ev.returnValue = '写真をまだ送っています'; return ev.returnValue; } });
+function savePhoto(btn, dataUrl, mode) {
+  var it = ITEM, out = photoOut();
+  if (!it || !out) return;
+  var slot = it._pslot || 1;
+  var job = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), jan: it.jan, slot: slot, label: PSLOTS[slot - 1], tries: 0, at: Date.now(),
+    req: { jan: it.jan, name: it.name || '', data: dataUrl, mime: 'image/jpeg', by: staffName(), blur: mode === 'ai' ? 'AI' : mode === 'simple' ? '簡易（真ん中）' : mode === 'box' ? 'AI（箱）' : mode === 'manual' ? '手で範囲' : 'なし', slot: slot } };
+  UPQ = UPQ.filter(function (x) { return !(x.jan === job.jan && x.slot === job.slot && x.failed); }); // 送れなかった同じ枠の写真は、新しい写真に置き換える
+  UPQ.push(job); upSave(job);
+  out.innerHTML = '<div class="photoDone"><img src="' + dataUrl + '" alt=""><div>' + esc(job.label) + 'の写真を受け付けました。<div class="hint" style="margin:0">裏でドライブに送っています。このまま次の写真・次の商品へ進めます</div></div></div>';
+  if (slot < 4) it._pslot = slot + 1; // 次は 裏 → 側面1 → 側面2
+  renderPhotoSlots();
+  var pb = document.getElementById('photoBtnMain'); if (pb && slot < 4) pb.classList.add('flash');
+  toast(job.label + 'の写真を受け付けました（裏で送信中）');
+  upKick();
 }
 function initSheet() {
   var bg = document.getElementById('sheetBg');
@@ -1020,10 +1086,12 @@ function initSheet() {
     } else if (t.closest('[data-cnt]')) {
       var cs = document.querySelector('#sheetBody .cq').closest('.shSec'); t.disabled = true;
       api('scanCount', { jan: it.jan, count: cs.querySelector('.cq').value, place: cs.querySelector('.cp').value, shelf: cs.querySelector('.cs').value, by: by }).then(function (r) {
-        var d = r.count.count - r.count.book;
+        var d = r.count.count - r.count.book, iv = r.inv;
         if (SHEET_HOOKS.saved) SHEET_HOOKS.saved(r);
         if (r.item) { ITEM = r.item; showItem(); }
-        toast((d === 0 ? '棚卸しを記録しました（帳簿と一致）' : '棚卸しを記録しました（帳簿との差 ' + (d > 0 ? '+' : '') + d + '）') + (r.note ? '（' + r.note + '）' : ''), d !== 0 || !!r.note);
+        var msg = iv ? (iv.changes && iv.changes.length ? '在庫リストを直しました：' + iv.text : iv.d === 0 ? '在庫リストと同じ数でした（棚卸し済み）' : '棚卸しを記録しました')
+          : (d === 0 ? '棚卸しを記録しました（在庫リストと同じ）' : '棚卸しを記録しました（差 ' + (d > 0 ? '+' : '') + d + '）');
+        toast(msg + (r.note ? '（' + r.note + '）' : ''), !!r.note);
       }, fail(t));
     } else if (t.closest('[data-psave]')) {
       if (PHOTO) savePhoto(t, PHOTO.dataUrl, PHOTO.mode);
@@ -1041,7 +1109,13 @@ function initSheet() {
   bg.addEventListener('input', function (ev) { if (ev.target.matches && ev.target.matches('input, select')) ev.target.dataset.touched = '1'; });
   bg.addEventListener('change', function (ev) {
     if (ev.target.matches && ev.target.matches('select')) ev.target.dataset.touched = '1';
+    if (ev.target.matches && ev.target.matches('.cp') && ITEM) { // 場所を変えた → その場所の在庫リストの数を出す（数えた数をまだ触っていなければ、その数に）
+      var sec = ev.target.closest('.shSec'), b = (ITEM.row && ITEM.row.base) || {}, pl = ev.target.value, q = sec.querySelector('.cq');
+      sec.querySelector('.invNow').innerHTML = invNowText(b, pl);
+      if (q && !q.dataset.touched) q.value = b[pl] || 0;
+    }
   });
+  bg.addEventListener('input', function (ev) { if (ev.target.matches && ev.target.matches('.cq')) ev.target.dataset.touched = '1'; });
 }
 // 写真 → 背景をぼかして確認の表示
 // 確認の表示（ぼかした写真・保存・撮り直し・範囲を手で直す）
@@ -1097,7 +1171,7 @@ function runBlur(f, opt) {
     out.innerHTML = '<div class="hint busy">背景をぼかしています…' + (BLUR.sess ? '' : '（初回はAIの読み込みに少しかかります）') + '</div>';
     PHOTO = null;
     setTimeout(function () { // 表示を出してから重い処理
-      blurPhoto(f, 2000, opt).then(function (res) {
+      blurPhoto(f, 1600, opt).then(function (res) { // 1600px（送るのが速い。在庫リストの写真・出品にも十分）
         res.file = f;
         if (!ITEM || ITEM.jan !== it.jan) return;
         showPreview(res);
@@ -1276,6 +1350,7 @@ function init() {
     else if (navigator.clipboard) navigator.clipboard.writeText(link).then(function () { toast('リンクをコピーしました'); }, function () {});
   });
   initSheet();
+  setTimeout(upResume, 1500); // 前に送り終わらなかった写真の続き
   showStaff();
   document.getElementById('staffBtn').addEventListener('click', function () { stopCam(); askStaff(null); });
   document.addEventListener('visibilitychange', function () {
