@@ -125,6 +125,9 @@
   .upChip { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom)); z-index: 60; max-width: calc(100% - 32px); padding: 8px 14px; border-radius: 18px; border: 0; font: inherit; font-size: 13px; background: #2b6cb0; color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
   .upChip.ng { background: #c53030; }
   .upChip[hidden] { display: none; }
+
+.bcBtn { font-size: 11px; padding: 1px 6px; margin-left: 4px; border-radius: 6px; }
+.noJanBtn { margin-top: 8px; width: 100%; font-size: 14px; padding: 8px; border-radius: 10px; }
 </style>
 <script>
 (function () { var t = null; try { t = localStorage.getItem('scanTheme'); } catch (e) {}
@@ -161,6 +164,7 @@
       <button type="button" class="big sub2" id="focusJan">JANを入力</button>
     </div>
     <form class="janForm" id="janForm" autocomplete="off"><input id="janIn" inputmode="numeric" placeholder="JANを入力" aria-label="JANを入力（バーコードリーダーも使えます）"><button type="submit">探す</button></form>
+    <button type="button" class="noJanBtn sub2" id="noJanBtn">JANがない商品を登録</button>
     <p id="msg"></p>
     <div id="hist"></div>
     <details class="more"><summary>このページを社員に送る・使い方</summary>
@@ -830,7 +834,7 @@ function openItem(it) {
 }
 function newItemForm(it, open) {
   var ms = it.ms || null;
-  return '<div class="shSec newItem"' + (open ? '' : ' hidden') + '><div class="shT">在庫リストに登録</div>' +
+  return '<div class="shSec newItem"' + (open ? '' : ' hidden') + '><div class="shT">在庫リストに登録' + (it.noJan ? '（JANなし）' : '') + '</div>' +
     (ms ? '<div class="msBox">' + (ms.image ? '<img src="' + esc(ms.image) + '" alt="" loading="lazy">' : '') + '<div class="hint" style="margin:0">マイルストンの商品情報から入れました。違っていたら直してください<br>' +
       '<a href="' + esc(ms.url) + '" target="_blank" rel="noopener">マイルストンで見る</a>' + (ms.price ? '・上代 ' + Number(ms.price).toLocaleString() + '円' : '') + (ms.carton ? '・カートン ' + esc(ms.carton) + '個' : '') + '</div></div>' : '') +
     '<label class="fl">商品名<input class="niName" value="' + esc(it.name || (ms && ms.name) || '') + '" placeholder="箱に書いてある商品名"></label>' +
@@ -839,7 +843,40 @@ function newItemForm(it, open) {
     '<div class="fl">個数' + qtyBox('niQty', 1) + '</div>' +
     '<label class="fl">メーカー名（分かれば）<input class="niMaker" value="' + esc((ms && ms.maker) || '') + '"></label>' +
     '<button type="button" class="go wide" data-new="1">登録する</button>' +
-    '<div class="hint" style="margin:6px 0 0">在庫リスト TOYSLINKS の選んだタブ（その他＝「その他在庫」）のいちばん下に1行足します。登録したら続けて写真を撮れます</div></div>';
+    '<div class="hint" style="margin:6px 0 0">在庫リスト TOYSLINKS の選んだタブ（その他＝「その他在庫」）のいちばん下に1行足します。' + (it.noJan ? 'JANの欄には店内用の番号（29から始まる13けた）を自動で入れます。' : '') + '登録したら続けて写真を撮れます</div></div>';
+}
+// ---------- v1.29.0：JAN（バーコード）がない商品を登録（店内用の番号を自動でつける）----------
+function openNoJan() {
+  if (!staffName()) { askStaff(openNoJan); return; }
+  ITEM = { jan: '', noJan: true, name: '', places: SHEET_HOOKS.places ? SHEET_HOOKS.places() : null }; PHOTO = null;
+  openSheet('<div class="shHead"><div><div class="shName">JANがない商品を登録</div><div class="jan">JANコード（バーコード）がない商品は、店内用の番号（29から始まる13けた）を自動でつけて在庫リストに登録します。登録したら、その番号のバーコードを印刷して貼れます</div></div><button type="button" class="shX" data-close="1" aria-label="閉じる">×</button></div>' +
+    newItemForm(ITEM, true) + '<button type="button" class="nextScan sub" data-close="1">やめる</button>');
+  setTimeout(function () { var i = document.querySelector('#sheetBody .niName'); if (i) i.focus(); }, 60);
+}
+// 店内用の番号（JANなし）：バーコード（JAN-13）を印刷する
+function isInStore(j) { return /^29\d{11}$/.test(String(j || '')); }
+function ean13Svg(code) {
+  var L = ['0001101', '0011001', '0010011', '0111101', '0100011', '0110001', '0101111', '0111011', '0110111', '0001011'];
+  var G = ['0100111', '0110011', '0011011', '0100001', '0011101', '0111001', '0000101', '0010001', '0001001', '0010111'];
+  var R = ['1110010', '1100110', '1101100', '1000010', '1011100', '1001110', '1010000', '1000100', '1001000', '1110100'];
+  var P = ['LLLLLL', 'LLGLGG', 'LLGGLG', 'LLGGGL', 'LGLLGG', 'LGGLLG', 'LGGGLL', 'LGLGLG', 'LGLGGL', 'LGGLGL'];
+  var d = String(code).split('').map(Number), par = P[d[0]], bits = '101';
+  for (var i = 1; i <= 6; i++) bits += (par.charAt(i - 1) === 'L' ? L : G)[d[i]];
+  bits += '01010';
+  for (var k = 7; k <= 12; k++) bits += R[d[k]];
+  bits += '101';
+  var m = 2, h = 60, x0 = 11 * m, rects = '';
+  for (var b = 0; b < bits.length; b++) if (bits.charAt(b) === '1') { var guard = b < 3 || (b >= 45 && b < 50) || b >= 92; rects += '<rect x="' + (x0 + b * m) + '" y="0" width="' + m + '" height="' + (guard ? h + 8 : h) + '"/>'; }
+  var w = x0 * 2 + bits.length * m;
+  var txt = '<text x="' + (x0 - 4) + '" y="' + (h + 18) + '" text-anchor="end">' + d[0] + '</text><text x="' + (x0 + 24 * m) + '" y="' + (h + 18) + '" text-anchor="middle">' + code.slice(1, 7) + '</text><text x="' + (x0 + 70 * m) + '" y="' + (h + 18) + '" text-anchor="middle">' + code.slice(7) + '</text>';
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + (h + 24) + '" viewBox="0 0 ' + w + ' ' + (h + 24) + '" font-family="monospace" font-size="14"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">' + rects + txt + '</g></svg>';
+}
+function printBarcode(code, name) {
+  var wdw = window.open('', '_blank', 'width=420,height=360');
+  if (!wdw) { toast('印刷の画面を開けませんでした（ポップアップを許可してください）', true); return; }
+  wdw.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + esc(code) + '</title><style>body{font-family:sans-serif;margin:12px;text-align:center}div{font-size:12px;margin-top:4px;word-break:break-all}@media print{button{display:none}}</style></head><body>' + ean13Svg(code) +
+    '<div>' + esc(name || '') + '</div><div>店内用の番号（JANなし）</div><button onclick="window.print()">印刷する</button><script>setTimeout(function(){window.print();},300)<\/script></body></html>');
+  wdw.document.close();
 }
 // 商品写真の4枚（表・裏・側面1・側面2）
 var PSLOTS = ['表', '裏', '側面1', '側面2'];
@@ -870,7 +907,7 @@ function renderPhotoSlots() {
 }
 function showItem() {
   var it = ITEM, r = it.row, h = '';
-  h += '<div class="shHead"><div><div class="shName">' + esc(it.name || '（商品名が見つかりません）') + '</div><div class="jan">JAN ' + esc(it.jan) +
+  h += '<div class="shHead"><div><div class="shName">' + esc(it.name || '（商品名が見つかりません）') + '</div><div class="jan">' + (isInStore(it.jan) ? '店内用の番号（JANなし） ' + esc(it.jan) + ' <button type="button" class="bcBtn" data-barcode="1">バーコードを印刷</button>' : 'JAN ' + esc(it.jan)) +
     (it.tabs && it.tabs.length ? '・在庫リスト：' + it.tabs.map(function (t) { return esc(PLACE_TAB[t] || t); }).join('・') : '') + (it.shelf ? '・棚番 ' + esc(it.shelf) : '') + '</div></div>' +
     '<button type="button" class="shX" data-close="1" aria-label="閉じる">×</button></div>';
   if (it.searching) { // 手元の一覧に無い商品：スプレッドシートで探している間
@@ -1066,13 +1103,14 @@ function initSheet() {
     var it = ITEM; if (!it) return;
     var fail = function (b) { return function (e) { b.disabled = false; toast(e.message, true); }; };
     var by = staffName();
+    if (t.closest('[data-barcode]')) { printBarcode(it.jan, it.name); return; }
     if (t.closest('[data-newopen]')) { var nf = document.querySelector('#sheetBody .newItem'); nf.hidden = false; t.closest('.shSec').hidden = true; nf.scrollIntoView({ block: 'nearest' }); return; }
     if (t.closest('[data-new]')) {
       var sec = t.closest('.newItem'), g = function (c) { return sec.querySelector(c).value; };
       if (!g('.niName').trim()) { toast('商品名を入れてください', true); sec.querySelector('.niName').focus(); return; }
       t.disabled = true;
-      api('scanNew', { jan: it.jan, name: g('.niName'), place: g('.niPlace'), shelf: g('.niShelf'), qty: g('.niQty'), maker: g('.niMaker'), by: by, price: it.ms ? it.ms.price : '', carton: it.ms ? it.ms.carton : '' }).then(function (r) {
-        afterSave(r, '在庫リストの「' + r.tab + '」に登録しました');
+      api('scanNew', { jan: it.noJan ? '' : it.jan, noJan: !!it.noJan, name: g('.niName'), place: g('.niPlace'), shelf: g('.niShelf'), qty: g('.niQty'), maker: g('.niMaker'), by: by, price: it.ms ? it.ms.price : '', carton: it.ms ? it.ms.carton : '' }).then(function (r) {
+        afterSave(r, '在庫リストの「' + r.tab + '」に登録しました' + (r.noJan ? '（店内用の番号 ' + r.jan + '。上の「バーコードを印刷」で貼るバーコードを出せます）' : ''));
         var ps = document.getElementById('photoSec'); if (ps) { ps.classList.add('flash'); ps.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
       }, fail(t));
       return;
@@ -1342,6 +1380,7 @@ function init() {
     decodeImageFile(f).then(found);
   });
   document.getElementById('janForm').addEventListener('submit', function (ev) { ev.preventDefault(); found(document.getElementById('janIn').value); });
+  document.getElementById('noJanBtn').addEventListener('click', function () { openNoJan(); });
   document.getElementById('hist').addEventListener('click', function (ev) { var b = ev.target.closest('.histRow'); if (b) found(b.dataset.jan); });
   document.getElementById('shareBtn').addEventListener('click', function () {
     var link = location.origin + location.pathname + '#' + encodeURIComponent(CFG.u + '?k=' + CFG.k);
